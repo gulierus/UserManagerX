@@ -1231,8 +1231,6 @@ def test_cancelling_while_waiting_for_the_2fa_code_cancels_the_task(edupage):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: cancelling the 2FA dialog is logged as a login error",
-                   strict=False)
 def test_cancelling_the_2fa_dialog_is_not_logged_as_a_login_error(edupage):
     """A cancellation is a user decision - it must not be logged as an ERROR."""
     edupage.needs_2fa = True
@@ -2180,9 +2178,6 @@ def test_ad_load_strips_the_trida_prefix_from_the_class_name(ad_widget, ad_direc
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: an attribute the directory did not return reads "
-                          "as the string 'None', so nameless accounts are kept",
-                   strict=False)
 def test_ad_load_skips_accounts_without_a_first_or_last_name(ad_widget, ad_directory,
                                                              dialogs):
     """A user without givenName or sn is not a student record."""
@@ -2212,8 +2207,6 @@ def test_ad_load_reports_a_rejected_bind(ad_widget, ad_directory, dialogs):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: user entries are read without requesting "
-                          "distinguishedName", strict=False)
 def test_ad_load_imports_the_students_of_every_class_ou(ad_widget, ad_directory,
                                                         dialogs):
     """Students of every Trida-* unit become persons of that class."""
@@ -2239,8 +2232,6 @@ def test_ad_load_imports_the_students_of_every_class_ou(ad_widget, ad_directory,
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the case-insensitive LDAP match is thrown away "
-                          "by a case-sensitive startswith", strict=False)
 def test_ad_load_accepts_a_class_ou_written_in_lower_case(ad_widget, ad_directory,
                                                           dialogs):
     """LDAP matches 'trida-7b' case-insensitively, so the class must be loaded."""
@@ -2254,8 +2245,6 @@ def test_ad_load_accepts_a_class_ou_written_in_lower_case(ad_widget, ad_director
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the Search Format combo box is never read",
-                   strict=False)
 def test_ad_load_honours_the_selected_search_format(ad_widget, ad_directory, dialogs):
     """The chosen 'Search Format' must influence the OU search filter."""
     ad_directory.add_ou("Trida-6A")
@@ -2276,8 +2265,6 @@ def test_ad_load_honours_the_selected_search_format(ad_widget, ad_directory, dia
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the ImportError branch closes a progress dialog "
-                          "that was never created", strict=False)
 def test_ad_load_reports_a_missing_ldap3_package(ad_widget, dialogs, monkeypatch):
     """Without ldap3 the user gets a message - not a NameError."""
     monkeypatch.setitem(sys.modules, "ldap3", None)

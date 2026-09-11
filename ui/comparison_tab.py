@@ -443,7 +443,11 @@ class SourcePanel(QWidget):
         }
 
         previous_class = person.class_name
-        previous_identity = (person.first_name, person.last_name)
+        # The identity that decides whether a record is a duplicate is the
+        # normalized name *together with the class* - moving a student onto a
+        # namesake creates just as much of a duplicate as renaming them does,
+        # so the class has to be part of the "did anything change?" key.
+        previous_identity = person.get_normalized_name()
 
         dialog = PropertyEditorDialog(
             person,
@@ -458,7 +462,7 @@ class SourcePanel(QWidget):
         if person.class_name != previous_class:
             self._move_person_to_class(person, previous_class, person.class_name)
 
-        if (person.first_name, person.last_name) != previous_identity:
+        if person.get_normalized_name() != previous_identity:
             self._warn_about_duplicate(person)
 
         self.refresh_tree(self.search_input.text().strip())
@@ -472,9 +476,12 @@ class SourcePanel(QWidget):
         if source is None:
             return
 
+        # ``Person`` compares by value, so ``in`` / ``list.remove()`` would
+        # pull the first *equal* record out of the first class that happens to
+        # hold a namesake.  Match the object itself instead.
         for cls in list(source.classes):
-            if person in cls.persons:
-                cls.persons.remove(person)
+            if any(existing is person for existing in cls.persons):
+                cls.remove_person(person)
                 break
 
         target = source.find_class_by_name(new_class_name)
@@ -536,8 +543,12 @@ class SourcePanel(QWidget):
         removed = 0
         for person in persons_to_delete:
             for cls in self.current_source.classes:
-                if person in cls.persons:
-                    cls.persons.remove(person)
+                # Two students carrying identical data compare equal, so a
+                # value based lookup deleted the first of them instead of the
+                # record the user selected.  ``Class.remove_person`` matches by
+                # identity, which keeps duplicates individually deletable.
+                if any(existing is person for existing in cls.persons):
+                    cls.remove_person(person)
                     removed += 1
                     break
 

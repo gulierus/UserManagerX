@@ -81,7 +81,7 @@ python main.py
 ```bash
 pip install pytest
 python -m pytest                 # the whole suite
-python -m pytest -m bug          # regression tests for previously fixed defects
+python -m pytest -m bug          # regression tests for the 137 fixed defects
 python -m pytest tests/test_models.py -v
 ```
 

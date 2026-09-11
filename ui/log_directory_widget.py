@@ -135,9 +135,16 @@ class LogDirectoryWidget(QWidget):
 
         reset_base_btn = QPushButton("↺")
         reset_base_btn.setFixedWidth(30)
-        reset_base_btn.setToolTip("Reset to default (application directory)")
+        # Was: setText(get_application_directory()) - which threw away a
+        # default_base_path handed to the constructor.  Like its two siblings
+        # this button restores the widget's own default (which is the
+        # application directory only when no other default was configured).
+        reset_base_btn.setToolTip(
+            "Reset to default base path (the application directory unless "
+            "another default was configured)"
+        )
         reset_base_btn.clicked.connect(
-            lambda: self._base_input.setText(get_application_directory())
+            lambda: self._base_input.setText(self._default_base)
         )
         base_row.addWidget(reset_base_btn)
 
@@ -275,7 +282,14 @@ class LogDirectoryWidget(QWidget):
         base = self.get_base_path()
         folder = self.get_folder_name()
         try:
-            return str((Path(base) / folder).expanduser())
+            log_dir = (Path(base) / folder).expanduser()
+            # A hand-typed base path may be relative ("mylogs").  The getter
+            # promises an absolute directory, and a relative path would end up
+            # under the application directory once the handler opens the file,
+            # so resolve it there instead of handing out a relative fragment.
+            if not log_dir.is_absolute():
+                log_dir = Path(get_application_directory()) / log_dir
+            return str(log_dir)
         except (OSError, ValueError):                # pragma: no cover - defensive
             return f"{base}{os.sep}{folder}"
 
@@ -313,10 +327,19 @@ class LogDirectoryWidget(QWidget):
             problems.append(
                 f"Folder name must not contain any of {_INVALID_FILENAME_CHARS}."
             )
+        # A NUL is not part of _INVALID_FILENAME_CHARS, and the file system
+        # probe below cannot report it either: Path.exists() answers False for
+        # a path with an embedded null byte instead of raising.  Without these
+        # two checks the status line claimed such a path was usable while
+        # opening the log file would fail with a ValueError.
+        if '\0' in folder_raw:
+            problems.append("Folder name contains a null character.")
         if file_raw and any(char in file_raw for char in _INVALID_FILENAME_CHARS):
             problems.append(
                 f"Log filename must not contain any of {_INVALID_FILENAME_CHARS}."
             )
+        if '\0' in file_raw:
+            problems.append("Log filename contains a null character.")
 
         if problems:
             return problems

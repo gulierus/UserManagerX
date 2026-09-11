@@ -564,10 +564,25 @@ def test_edit_person_does_not_warn_when_the_name_stays_unique(
     assert not dialogs.saw("more than once")
 
 
+@pytest.mark.parametrize("changes", [
+    {"last_name": "Svoboda"},   # the comparison key really changes
+    {"class_name": "7.B"},      # ... and so does a move into an empty class
+])
+def test_edit_person_runs_the_duplicate_check_without_crying_wolf(
+        monkeypatch, build_source, panel_for, dialogs, changes):
+    """The check has to run on a real change - and stay silent without a clash."""
+    source = build_source([("6.A", [("Jan", "Novák"), ("Petr", "Dvořák")]),
+                           ("7.B", [("Eva", "Malá")])])
+    panel = panel_for(source)
+    select_item(panel, class_item(panel, "6.A").child(1))
+    fake_property_editor(monkeypatch, changes)
+
+    panel.on_edit_person()
+
+    assert not dialogs.saw("more than once")
+
+
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: moving a student into a class that already holds "
-                          "the same name raises no duplicate warning",
-                   strict=False)
 def test_edit_person_warns_when_a_class_change_creates_a_duplicate(
         monkeypatch, build_source, panel_for, dialogs):
     """Moving a student onto a namesake is just as duplicate as renaming them."""
@@ -645,9 +660,6 @@ def test_delete_persons_reports_a_selection_without_any_person(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: delete matches persons by value, so the first "
-                          "equal record is removed instead of the selected one",
-                   strict=False)
 def test_delete_persons_removes_the_record_that_was_actually_selected(
         build_source, panel_for, dialogs):
     """Two students with identical data must still be deletable individually."""

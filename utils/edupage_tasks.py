@@ -7,7 +7,7 @@ import logging
 from typing import Dict, List, Optional
 from PyQt6.QtCore import pyqtSignal
 
-from utils.progress_tasks import AbstractProgressTask, LogLevel
+from utils.progress_tasks import AbstractProgressTask, LogLevel, TaskCancelledException
 from models import Source, Class, Person
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,13 @@ class EduPageBaseTask(AbstractProgressTask):
         except ImportError:
             self.emit_log("edupage-api package not installed", LogLevel.ERROR)
             return False
+            
+        except TaskCancelledException:
+            # Cancelling the 2FA dialog is a user decision, not a login failure.
+            # The catch-all below used to swallow it, log it as "Login error" and
+            # return False; let it travel up so run() reports the task as
+            # cancelled without an error in the log.
+            raise
             
         except Exception as e:
             self.emit_log(f"Login error: {str(e)}", LogLevel.ERROR)

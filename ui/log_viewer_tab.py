@@ -631,9 +631,13 @@ class LogViewerTab(QWidget):
 
     def update_real_time_filter(self):
         """FIX 18: Asynchronous implementation of functional real-time filtering using stored messages"""
-        # If no messages, do nothing
+        # If no messages, do nothing - but still release the UI.  The controls
+        # are disabled while a filter runs; returning early without resetting
+        # the filtering state left the level combo disabled forever when the
+        # buffer was cleared between the keystroke and the debounced filter.
         if not self.real_time_logs:
             self.rt_stats_label.setText("Lines: 0")
+            self._set_filtering_state(False, "real-time")
             return
         
         # Cancel existing filter thread if running
@@ -718,18 +722,28 @@ class LogViewerTab(QWidget):
                 color = LOG_COLORS[level_name]
                 break
         
-        html_line = f'<span style="color: {color};">{escaped_line}</span><br>'
-        self.real_time_text.insertHtml(html_line)
-        
-        # FIX 4 & 20: Omezit počet řádků
+        # Every message becomes its own paragraph (block).  The previous
+        # version appended '<span>...</span><br>' with insertHtml(), which kept
+        # all messages inside a single block: blockCount()/lineCount() stayed 1,
+        # so the cap below never trimmed anything, and every insert re-laid out
+        # the whole growing paragraph (a thousand lines blocked the GUI for
+        # seconds, and the cost per line kept rising).
         doc = self.real_time_text.document()
-        if doc.lineCount() > MAX_REAL_TIME_LOG_LINES:
-            cursor = QTextCursor(doc)
-            cursor.movePosition(QTextCursor.MoveOperation.Start)
-            cursor.movePosition(QTextCursor.MoveOperation.Down, 
-                              QTextCursor.MoveMode.KeepAnchor, 
-                              doc.lineCount() - MAX_REAL_TIME_LOG_LINES)
-            cursor.removeSelectedText()
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not doc.isEmpty():
+            cursor.insertBlock()
+        cursor.insertHtml(f'<span style="color: {color};">{escaped_line}</span>')
+        
+        # FIX 4 & 20: Omezit počet řádků - drop the oldest blocks
+        excess = doc.blockCount() - MAX_REAL_TIME_LOG_LINES
+        if excess > 0:
+            trim = QTextCursor(doc)
+            trim.movePosition(QTextCursor.MoveOperation.Start)
+            trim.movePosition(QTextCursor.MoveOperation.NextBlock,
+                              QTextCursor.MoveMode.KeepAnchor,
+                              excess)
+            trim.removeSelectedText()
         
         # Auto-scroll
         if self.auto_scroll_check.isChecked():
@@ -744,24 +758,14 @@ class LogViewerTab(QWidget):
         if len(self.real_time_logs) > MAX_REAL_TIME_LOG_LINES:
             self.real_time_logs.pop(0)
         
-        # Display if passes filter
-        level_filter = self.rt_level_combo.currentText()
-        search_text = self.rt_search_input.text().lower()
+        # Display if passes filter (the duplicated inline filter code used the
+        # same rules as the helper, so the helper is the single source of truth)
+        if self._log_matches_filter({'msg': msg, 'level': level}):
+            self.append_colored_line(msg)
         
-        # Level filter
-        if level_filter != 'ALL':
-            level_name = logging.getLevelName(level)
-            if level_name != level_filter:
-                return
-        
-        # Text search
-        if search_text and search_text not in msg.lower():
-            return
-        
-        # Display message
-        self.append_colored_line(msg)
-        
-        # Update stats
+        # Update stats.  This used to sit behind the early returns above, so a
+        # message the filter hides never reached it and the "visible / stored"
+        # counter kept showing a stale total even though the record was stored.
         visible_count = len([log for log in self.real_time_logs 
                             if self._log_matches_filter(log)])
         self.rt_stats_label.setText(f"Lines: {visible_count} / {len(self.real_time_logs)}")
@@ -861,6 +865,12 @@ class LogViewerTab(QWidget):
         
         if 'path' not in log_file:
             QMessageBox.warning(self, "Error", "Log file path not found")
+            return
+        
+        # FIX 14: 'size' is required by the large-file check below; a truncated
+        # entry used to raise KeyError inside this slot instead of warning.
+        if not isinstance(log_file.get('size'), (int, float)):
+            QMessageBox.warning(self, "Error", "Log file size not found")
             return
         
         # FIX 5: Kontrola velikosti souboru před načtením
@@ -987,8 +997,12 @@ class LogViewerTab(QWidget):
     def _on_hist_filter_progress(self, current, total):
         """Update progress during historical filtering"""
         current_stats = self.hist_stats_label.text()
-        if " | Filtered:" in current_stats:
-            current_stats = current_stats.split(" | Filtered:")[0]
+        # Drop the counter of the previous update, whichever kind it was: only
+        # " | Filtered:" was stripped, so consecutive progress updates piled up
+        # as "... | Filtering... 0/1000 | Filtering... 500/1000 | ...".
+        for suffix in (" | Filtering...", " | Filtered:"):
+            if suffix in current_stats:
+                current_stats = current_stats.split(suffix)[0]
         self.hist_stats_label.setText(current_stats + f" | Filtering... {current}/{total}")
     
     def _on_hist_filter_finished(self, filtered_lines):

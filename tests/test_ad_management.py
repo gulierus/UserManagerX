@@ -354,8 +354,6 @@ def test_refresh_after_persons_were_removed_shrinks_the_table(loaded):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: refresh_person_table leaks one Edit button per "
-                          "person on every repaint", strict=False)
 def test_refresh_does_not_leak_edit_buttons(loaded):
     """Repainting the table must not pile up orphaned Edit buttons."""
     widget, _source, persons = loaded
@@ -581,9 +579,6 @@ def test_edit_person_does_not_reserve_the_persons_own_username(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: edit_person compares persons by value, so a "
-                          "field-identical twin's user name is not reserved",
-                   strict=False)
 def test_edit_person_reserves_the_username_of_a_field_identical_twin(
         widget, source_of, make_person, monkeypatch):
     """Another student's user name stays taken even when all fields match."""
@@ -962,9 +957,6 @@ def test_generate_missing_credentials_skips_and_reports_broken_records(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: generate_missing_credentials re-generates the "
-                          "user name of a person that only lacks a password",
-                   strict=False)
 def test_generate_missing_credentials_keeps_an_existing_username(
         widget, source_of, make_person, dialogs):
     """Only the missing value is filled in - an existing login must survive."""
@@ -1769,9 +1761,6 @@ def test_editor_username_generation_needs_both_names(editor, make_person,
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: PropertyEditorDialog.generate_username raises "
-                          "ValueError for a name without ASCII letters",
-                   strict=False)
 @pytest.mark.parametrize("first,last", [
     ("Анна", "Иванова"),
     ("Jan", "???"),
@@ -1883,9 +1872,6 @@ def test_editor_home_path_without_a_template_warns(editor, dialogs):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the generators append a confirmation that the "
-                          "validate() call right after erases",
-                   strict=False)
 @pytest.mark.parametrize("method,needle", [
     ("generate_username", "Generated username"),
     ("generate_password", "Generated new password"),
@@ -1969,8 +1955,6 @@ def test_editor_group_list_shows_a_placeholder_when_empty(editor,
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: group changes are written to the Person "
-                          "immediately and survive Cancel", strict=False)
 def test_editor_cancel_restores_the_group_memberships(editor, make_person,
                                                       dialogs):
     """Cancelling the editor must not leave group changes behind."""

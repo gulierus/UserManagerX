@@ -38,6 +38,13 @@ Changes applied
 3d     ExportDialog moved to ui/export_dialog.py.
 
 3e     ImportDialog moved to ui/import_dialog.py (separated from ExportDialog).
+
+4a     Glyphs in plain-text widgets (QPushButton, QAction, QListWidgetItem) are
+       written as real characters.  Those widgets draw their text verbatim, so
+       the former HTML entities ("&#10133; Add Group") were shown literally -
+       and in buttons/menus the leading "&" was even eaten as a mnemonic.
+       Entities are kept only where the text really is rich text (QLabel with
+       markup, QTextEdit.setHtml).
 """
 
 import logging
@@ -232,7 +239,9 @@ class GroupManagementDialog(QDialog):
             self.ou_dn_input.setPlaceholderText("OU=Groups,DC=example,DC=com")
             ou_row.addWidget(self.ou_dn_input)
             ol.addLayout(ou_row)
-            discover_btn = QPushButton("&#128269; Discover Groups")
+            # Real characters, not HTML entities: a QPushButton draws its
+            # caption as plain text (see module docstring, 4a).
+            discover_btn = QPushButton("🔍 Discover Groups")
             discover_btn.clicked.connect(self.discover_groups)
             ol.addWidget(discover_btn)
             ol.addSpacing(10)
@@ -252,13 +261,13 @@ class GroupManagementDialog(QDialog):
         self.group_name_input.setPlaceholderText("Auto-extracted from DN")
         name_row.addWidget(self.group_name_input)
         ol.addLayout(name_row)
-        add_btn = QPushButton("&#10133; Add Group")
+        add_btn = QPushButton("➕ Add Group")
         add_btn.clicked.connect(self.add_group_manually)
         ol.addWidget(add_btn)
         ol.addSpacing(10)
 
         ol.addWidget(QLabel("<b>Verification:</b>"))
-        verify_btn = QPushButton("&#10003; Verify Selected in AD")
+        verify_btn = QPushButton("✓ Verify Selected in AD")
         verify_btn.clicked.connect(self.verify_selected_groups)
         if not self.has_credentials:
             verify_btn.setEnabled(False)
@@ -273,10 +282,10 @@ class GroupManagementDialog(QDialog):
 
         ol.addWidget(QLabel("<b>Group Operations:</b>"))
         grp_ops = QHBoxLayout()
-        remove_btn = QPushButton("&#10060; Remove Selected")
+        remove_btn = QPushButton("❌ Remove Selected")
         remove_btn.clicked.connect(self.remove_selected_groups)
         grp_ops.addWidget(remove_btn)
-        clear_btn = QPushButton("&#128465; Clear All")
+        clear_btn = QPushButton("🗑 Clear All")
         clear_btn.clicked.connect(self.clear_all_groups)
         grp_ops.addWidget(clear_btn)
         ol.addLayout(grp_ops)
@@ -284,10 +293,10 @@ class GroupManagementDialog(QDialog):
 
         ol.addWidget(QLabel("<b>Export/Import:</b>"))
         ei_row = QHBoxLayout()
-        exp_btn = QPushButton("&#128190; Export Groups...")
+        exp_btn = QPushButton("💾 Export Groups...")
         exp_btn.clicked.connect(self.export_groups)
         ei_row.addWidget(exp_btn)
-        imp_btn = QPushButton("&#128194; Import Groups...")
+        imp_btn = QPushButton("📂 Import Groups...")
         imp_btn.clicked.connect(self.import_groups)
         ei_row.addWidget(imp_btn)
         ol.addLayout(ei_row)
@@ -336,13 +345,13 @@ class GroupManagementDialog(QDialog):
         ol = QVBoxLayout(ops)
 
         ol.addWidget(QLabel("<b>Create New Template:</b>"))
-        create_btn = QPushButton("&#10133; Create from Selected Groups")
+        create_btn = QPushButton("➕ Create from Selected Groups")
         create_btn.clicked.connect(self.create_template_from_groups)
         ol.addWidget(create_btn)
         ol.addSpacing(10)
 
         ol.addWidget(QLabel("<b>Verification:</b>"))
-        verify_tmpl_btn = QPushButton("&#10003; Verify Selected Template")
+        verify_tmpl_btn = QPushButton("✓ Verify Selected Template")
         verify_tmpl_btn.clicked.connect(self.verify_selected_template)
         if not self.has_credentials:
             verify_tmpl_btn.setEnabled(False)
@@ -352,13 +361,13 @@ class GroupManagementDialog(QDialog):
 
         ol.addWidget(QLabel("<b>Template Operations:</b>"))
         tmpl_ops = QHBoxLayout()
-        rename_btn = QPushButton("&#9999; Rename")
+        rename_btn = QPushButton("✏ Rename")
         rename_btn.clicked.connect(self.rename_template)
         tmpl_ops.addWidget(rename_btn)
-        copy_btn = QPushButton("&#128203; Copy")
+        copy_btn = QPushButton("📋 Copy")
         copy_btn.clicked.connect(self.copy_template)
         tmpl_ops.addWidget(copy_btn)
-        delete_btn = QPushButton("&#10060; Delete")
+        delete_btn = QPushButton("❌ Delete")
         delete_btn.clicked.connect(self.delete_template)
         tmpl_ops.addWidget(delete_btn)
         ol.addLayout(tmpl_ops)
@@ -366,10 +375,10 @@ class GroupManagementDialog(QDialog):
 
         ol.addWidget(QLabel("<b>Export/Import:</b>"))
         ei_row = QHBoxLayout()
-        exp_btn = QPushButton("&#128190; Export Templates...")
+        exp_btn = QPushButton("💾 Export Templates...")
         exp_btn.clicked.connect(self.export_templates)
         ei_row.addWidget(exp_btn)
-        imp_btn = QPushButton("&#128194; Import Templates...")
+        imp_btn = QPushButton("📂 Import Templates...")
         imp_btn.clicked.connect(self.import_templates)
         ei_row.addWidget(imp_btn)
         ol.addLayout(ei_row)
@@ -412,15 +421,83 @@ class GroupManagementDialog(QDialog):
             "Use the 'Verify' button to check if it exists.",
         )
 
+    @staticmethod
+    def _split_rdns(dn: str) -> List[str]:
+        """
+        Split a DN into its RDNs.
+
+        ``dn.split(",")`` is wrong: RFC 4514 lets a value contain a comma when
+        it is escaped with a backslash, so ``CN=Sales\\, EU,OU=Groups`` is two
+        RDNs, not three.  Only an *unescaped* comma separates RDNs.
+        """
+        parts: List[str] = []
+        current: List[str] = []
+        escaped = False
+        for char in dn:
+            if escaped:
+                current.append(char)
+                escaped = False
+            elif char == "\\":
+                current.append(char)
+                escaped = True
+            elif char == ",":
+                parts.append("".join(current).strip())
+                current = []
+            else:
+                current.append(char)
+        parts.append("".join(current).strip())
+        return parts
+
+    @staticmethod
+    def _unescape_dn_value(value: str) -> str:
+        """
+        Undo RFC 4514 escaping of an attribute value.
+
+        ``\\,`` is a literal comma and ``\\XX`` a byte written in hex;
+        consecutive hex escapes belong to one UTF-8 sequence and are decoded
+        together so that e.g. ``\\C3\\A1`` becomes ``á``.
+        """
+        hex_digits = "0123456789abcdefABCDEF"
+        out: List[str] = []
+        raw = bytearray()
+
+        def flush():
+            if raw:
+                out.append(raw.decode("utf-8", errors="replace"))
+                raw.clear()
+
+        index = 0
+        while index < len(value):
+            char = value[index]
+            if char == "\\" and index + 1 < len(value):
+                pair = value[index + 1:index + 3]
+                if len(pair) == 2 and all(c in hex_digits for c in pair):
+                    raw.append(int(pair, 16))
+                    index += 3
+                    continue
+                flush()
+                out.append(value[index + 1])
+                index += 2
+                continue
+            flush()
+            out.append(char)
+            index += 1
+        flush()
+        return "".join(out)
+
     def _extract_cn_from_dn(self, dn: str) -> str:
         """Extract the CN component from a Distinguished Name."""
         try:
-            for part in dn.split(","):
-                part = part.strip()
+            parts = self._split_rdns(dn)
+            for part in parts:
                 if part.upper().startswith("CN="):
-                    return part[3:]
-            parts = dn.split(",")
-            return parts[0].strip() if parts else "Unknown Group"
+                    return self._unescape_dn_value(part[3:])
+            # No CN= component: fall back to the first RDN.  A DN that holds no
+            # usable RDN at all ("", ",", "   ") used to yield an empty string,
+            # which then became the group's display name - the placeholder is
+            # used instead, exactly like for an unusable (non-string) DN.
+            first = self._unescape_dn_value(parts[0]) if parts else ""
+            return first or "Unknown Group"
         except Exception as exc:
             logger.warning("Failed to extract CN from DN '%s': %s", dn, exc)
             return "Unknown Group"
@@ -569,11 +646,11 @@ class GroupManagementDialog(QDialog):
     def _show_group_context_menu(self, position):
         menu = QMenu()
         if self.has_credentials:
-            verify_action = QAction("&#10003; Verify in AD", self)
+            verify_action = QAction("✓ Verify in AD", self)
             verify_action.triggered.connect(self.verify_selected_groups)
             menu.addAction(verify_action)
             menu.addSeparator()
-        remove_action = QAction("&#10060; Remove", self)
+        remove_action = QAction("❌ Remove", self)
         remove_action.triggered.connect(self.remove_selected_groups)
         menu.addAction(remove_action)
         menu.exec(self.group_list.viewport().mapToGlobal(position))
@@ -605,6 +682,10 @@ class GroupManagementDialog(QDialog):
                 item.setForeground(QColor("#9E9E9E"))
             self.group_list.addItem(item)
         self.group_count_label.setText(f"Groups: {len(self.groups)} ({verified_count} verified)")
+        # The dedicated counter was built once in _create_groups_tab() and never
+        # touched again, so it kept claiming "Verified: 0" no matter what the
+        # list held; it is rebuilt with the rest of the list from now on.
+        self.group_verified_label.setText(f"Verified: {verified_count}")
 
     # ------------------------------------------------------------------
     # Discovery
@@ -733,17 +814,30 @@ class GroupManagementDialog(QDialog):
         existing_dns = {g.dn.lower() for g in self.groups}
         new_groups: List[ADGroup] = []
         duplicate_pairs: List[tuple] = []  # (existing, imported)
+        seen_dns = set()          # DNs already taken by an earlier file entry
+        in_file_duplicates = 0
 
         for group in imported_groups:
-            if group.dn.lower() in existing_dns:
-                existing = next(
-                    g for g in self.groups if g.dn.lower() == group.dn.lower()
-                )
+            dn = group.dn.lower()
+            if dn in seen_dns:
+                # The file lists the same DN twice.  Only its first entry is
+                # considered: importing both would put two groups with one DN
+                # into the list - the very thing add_group_manually refuses -
+                # and would also open two comparison rows for one stored group.
+                logger.warning("Imported file contains DN '%s' more than once; "
+                               "keeping the first occurrence", group.dn)
+                in_file_duplicates += 1
+                continue
+            seen_dns.add(dn)
+
+            if dn in existing_dns:
+                existing = next(g for g in self.groups if g.dn.lower() == dn)
                 duplicate_pairs.append((existing, group))
             else:
                 new_groups.append(group)
 
-        replaced = skipped = 0
+        replaced = 0
+        skipped = in_file_duplicates
 
         if duplicate_pairs:
             cmp_dlg = DuplicateGroupComparisonDialog(duplicate_pairs, self)
@@ -835,8 +929,20 @@ class GroupManagementDialog(QDialog):
         existing_names = {t.name for t in self.template_manager.get_all_templates()}
         new_templates: List[GroupTemplate] = []
         duplicate_pairs: List[tuple] = []  # (existing, imported)
+        seen_names = set()        # names already taken by an earlier file entry
+        in_file_duplicates = 0
 
         for tmpl in imported_templates:
+            if tmpl.name in seen_names:
+                # Templates are identified by name, so a file holding the name
+                # twice describes one template; the manager would refuse the
+                # second one anyway (see the counting below).
+                logger.warning("Imported file contains template '%s' more than "
+                               "once; keeping the first occurrence", tmpl.name)
+                in_file_duplicates += 1
+                continue
+            seen_names.add(tmpl.name)
+
             if tmpl.name in existing_names:
                 existing = self.template_manager.get_template(tmpl.name)
                 if existing:
@@ -844,7 +950,8 @@ class GroupManagementDialog(QDialog):
             else:
                 new_templates.append(tmpl)
 
-        replaced = skipped = 0
+        replaced = 0
+        skipped = in_file_duplicates
 
         if duplicate_pairs:
             cmp_dlg = DuplicateTemplateComparisonDialog(duplicate_pairs, self)
@@ -862,13 +969,20 @@ class GroupManagementDialog(QDialog):
                 else:
                     skipped += 1
 
+        # GroupTemplateManager.add_template() refuses a name it already holds,
+        # so the summary counts what was really stored instead of promising
+        # every template the file contained.
+        added = 0
         for tmpl in new_templates:
-            self.template_manager.add_template(tmpl)
+            if self.template_manager.add_template(tmpl):
+                added += 1
+            else:
+                skipped += 1
 
         self.refresh_template_list()
 
-        if new_templates or replaced or skipped:
-            parts = [f"Added {len(new_templates)} new template(s)."]
+        if added or replaced or skipped:
+            parts = [f"Added {added} new template(s)."]
             if replaced:
                 parts.append(f"Replaced {replaced} duplicate(s).")
             if skipped:
@@ -1198,14 +1312,14 @@ class GroupManagementDialog(QDialog):
 
     def _show_template_context_menu(self, position):
         menu = QMenu()
-        rename_action = QAction("&#9999; Rename", self)
+        rename_action = QAction("✏ Rename", self)
         rename_action.triggered.connect(self.rename_template)
         menu.addAction(rename_action)
-        copy_action = QAction("&#128203; Copy", self)
+        copy_action = QAction("📋 Copy", self)
         copy_action.triggered.connect(self.copy_template)
         menu.addAction(copy_action)
         menu.addSeparator()
-        delete_action = QAction("&#10060; Delete", self)
+        delete_action = QAction("❌ Delete", self)
         delete_action.triggered.connect(self.delete_template)
         menu.addAction(delete_action)
         menu.exec(self.template_list.viewport().mapToGlobal(position))
@@ -1226,17 +1340,18 @@ class GroupManagementDialog(QDialog):
             existing_count = template.get_existing_count()
             total = len(template.groups)
 
+            # QListWidgetItem text is plain text - real glyphs only (4a).
             display = f"{template.name} ({total} group{'s' if total != 1 else ''}"
             if total > 0:
                 if verified_count == 0:
-                    display += ", &#9888; unverified"
+                    display += ", ⚠ unverified"
                 elif verified_count == total:
                     if existing_count == verified_count:
-                        display += ", &#10003; all verified"
+                        display += ", ✓ all verified"
                     else:
-                        display += f", &#9888; {existing_count}/{verified_count} exist"
+                        display += f", ⚠ {existing_count}/{verified_count} exist"
                 else:
-                    display += f", &#9888; {verified_count}/{total} verified"
+                    display += f", ⚠ {verified_count}/{total} verified"
             display += ")"
 
             item = QListWidgetItem(display)

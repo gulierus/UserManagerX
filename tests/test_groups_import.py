@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QPushButton, QTextEdit,
 )
 
+import ui.export_dialog as export_dialog_module
 import ui.import_dialog as import_dialog_module
 from models import ADGroup, GroupTemplate, VerificationStatus
 from ui.duplicate_comparison_dialog import (
@@ -224,11 +225,14 @@ def make_import_dialog(qapp, dialogs, monkeypatch):
 
 
 @pytest.fixture
-def make_export_dialog(qapp, dialogs):
-    """Factory for an ExportDialog."""
+def make_export_dialog(qapp, dialogs, monkeypatch):
+    """Factory for an ExportDialog with a controlled method-availability map."""
     created = []
 
-    def _make(title="Export"):
+    def _make(title="Export", available=None):
+        if available is not None:
+            query = available if callable(available) else (lambda: available)
+            monkeypatch.setattr(export_dialog_module, "get_available_methods", query)
         dialog = ExportDialog(title)
         created.append(dialog)
         return dialog
@@ -536,7 +540,11 @@ class TestExportDialog:
     def test_accepted_form_reports_path_method_password(
             self, make_export_dialog, dialogs, index, method):
         """A complete form reports the trimmed path, the method and the password."""
-        dialog = make_export_dialog()
+        # Declare both backends installed: this test is about what a completed
+        # form reports, not about what happens to be available on this machine
+        # (the dialog refuses a method whose backend is missing - see
+        # test_method_without_a_backend_is_refused).
+        dialog = make_export_dialog(available=ALL_AVAILABLE)
         dialog._file_input.setText("  /tmp/skupiny.usrx ")
         dialog._pass_input.setText("Ďábelské heslo")
         dialog._pass_confirm.setText("Ďábelské heslo")
@@ -559,13 +567,13 @@ class TestExportDialog:
         assert dialog._file_input.text() == target
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: ExportDialog never checks whether the chosen "
-                              "encryption backend is installed", strict=False)
     def test_method_without_a_backend_is_refused(self, make_export_dialog, dialogs):
         """Picking an uninstalled backend must be caught here, like on import."""
-        if get_available_methods().get("gpg"):
-            pytest.skip("GPG is installed on this machine")
-        dialog = make_export_dialog()
+        # The missing backend is declared instead of being taken from this
+        # machine: the check under test must fire on every machine, also on one
+        # where GPG happens to be installed (the test used to skip itself
+        # there, which hid the defect).
+        dialog = make_export_dialog(available=NO_GPG)
         dialog._file_input.setText("/tmp/groups.usrx")
         dialog._pass_input.setText(PASSWORD)
         dialog._pass_confirm.setText(PASSWORD)
@@ -649,9 +657,6 @@ class TestExtractCnFromDn:
         assert dialog._extract_cn_from_dn(None) == "Unknown Group"
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: a DN without a usable RDN yields an empty "
-                              "group name instead of the 'Unknown Group' fallback",
-                       strict=False)
     @pytest.mark.parametrize("dn", ["", ",", "   "])
     def test_dn_without_any_rdn_falls_back_to_a_usable_name(self, make_gm_dialog, dn):
         """A group must never end up with an empty display name."""
@@ -659,8 +664,6 @@ class TestExtractCnFromDn:
         assert dialog._extract_cn_from_dn(dn) == "Unknown Group"
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: an escaped comma inside a CN is treated as an "
-                              "RDN separator", strict=False)
     def test_escaped_comma_stays_part_of_the_cn(self, make_gm_dialog):
         """``CN=Sales\\, EU`` is one RDN - the backslash escapes the comma."""
         dialog = make_gm_dialog()
@@ -727,9 +730,6 @@ class TestGroupListRendering:
         assert dialog.group_count_label.text() == "Groups: 2 (1 verified)"
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: group_verified_label is built once and never "
-                              "updated, so it always reads 'Verified: 0'",
-                       strict=False)
     def test_verified_label_tracks_the_verified_groups(self, make_gm_dialog):
         """The dedicated 'Verified:' counter must follow the real state."""
         verified = group(name="A", dn="CN=A,DC=local")
@@ -935,9 +935,6 @@ class TestTemplateListRendering:
         assert dialog.template_count_label.text() == "Templates: 2"
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: template rows contain raw HTML entities "
-                              "(&#9888;) which a QListWidget renders literally",
-                       strict=False)
     def test_row_text_contains_no_raw_html_entities(self, make_gm_dialog):
         """List rows are plain text, so the warning glyph must be a real character."""
         dialog = make_gm_dialog(
@@ -976,9 +973,6 @@ class TestDialogChrome:
         assert dialogs.titles() == ["Missing Input"]
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: button captions carry raw HTML entities "
-                              "(&#10133;) which QPushButton renders literally",
-                       strict=False)
     def test_buttons_are_labelled_with_real_characters(self, make_gm_dialog):
         """A QPushButton draws plain text, so '&#10133;' never becomes a glyph."""
         dialog = make_gm_dialog(credentials=True)
@@ -1055,9 +1049,6 @@ class TestHandleImportedGroups:
         assert dialogs.calls == []
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: a file holding two groups with the same DN is "
-                              "imported twice, breaking the one-group-per-DN rule",
-                       strict=False)
     def test_import_never_stores_the_same_dn_twice(self, make_gm_dialog,
                                                    dialog_driver):
         """The list must keep the uniqueness that manual adding enforces."""
@@ -1133,9 +1124,6 @@ class TestHandleImportedTemplates:
         assert dialog.template_list.count() == 1
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: a file holding two templates of the same name "
-                              "silently drops one but the summary counts both",
-                       strict=False)
     def test_summary_counts_only_the_templates_really_added(self, make_gm_dialog,
                                                             dialogs, dialog_driver):
         """The summary must not promise more templates than the manager holds."""

@@ -408,8 +408,6 @@ def test_generate_path_uses_the_last_part_for_a_compound_surname(make_person):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: bare {last_name} keeps only the last part of a "
-                          "compound surname", strict=False)
 def test_bare_last_name_placeholder_keeps_the_whole_surname(make_person):
     """'{last_name}' is documented as the *full* last name, not just one part."""
     person = make_person("Jan", "Nováková Svobodová", "6.A")
@@ -946,8 +944,6 @@ def test_cleanup_survives_a_temp_file_someone_else_deleted(font_manager,
 
 @pytest.mark.bug
 @pytest.mark.integration
-@pytest.mark.xfail(reason="BUG: a second face of the same family overwrites the "
-                          "first ReportLab registration", strict=False)
 def test_every_loaded_face_gets_its_own_reportlab_registration(font_manager,
                                                                regular_ttf,
                                                                bold_ttf):
@@ -967,8 +963,6 @@ def test_every_loaded_face_gets_its_own_reportlab_registration(font_manager,
 
 @pytest.mark.bug
 @pytest.mark.integration
-@pytest.mark.xfail(reason="BUG: cleanup() leaks the temp file orphaned by the "
-                          "second face of a family", strict=False)
 def test_cleanup_removes_every_temp_file_the_manager_created(font_manager,
                                                              regular_ttf,
                                                              bold_ttf,

@@ -251,9 +251,6 @@ def test_default_paths_are_absolute(widget, app_dir):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: a relative base path is never resolved against "
-                          "the application directory",
-                   strict=False)
 @pytest.mark.parametrize("getter", ["get_log_dir", "get_full_path"])
 def test_a_relative_base_path_still_yields_an_absolute_location(widget, getter):
     """Both getters promise an absolute path, whatever the user typed."""
@@ -397,9 +394,6 @@ def test_base_reset_button_restores_the_application_directory(widget, app_dir):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the base-path reset button ignores the "
-                          "default_base_path given to the constructor",
-                   strict=False)
 def test_base_reset_button_restores_the_configured_default_base(qapp, tmp_path,
                                                                 app_dir):
     """Like its two siblings, it must restore the constructor's default."""
@@ -480,10 +474,6 @@ def test_validate_reports_a_null_byte_in_the_base_path(widget, tmp_path):
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: a NUL byte in the folder name or log file name "
-                          "is not reported; the status line claims the path is "
-                          "usable",
-                   strict=False)
 @pytest.mark.parametrize("folder, filename", [
     ("lo\0gs", "app.log"),
     ("logs", "ap\0p.log"),
@@ -836,10 +826,6 @@ def test_save_reports_an_unexpected_error_instead_of_crashing(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: save_all_settings() ignores the False returned "
-                          "by SettingsManager.set() and still claims the other "
-                          "settings were saved",
-                   strict=False)
 @pytest.mark.integration
 def test_save_does_not_claim_success_when_the_settings_file_is_unwritable(
         tab, isolated_settings, dialogs, tmp_path):
@@ -1182,10 +1168,6 @@ def test_the_reset_button_asks_before_resetting(tab, isolated_settings,
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: _setup_logging_handlers() clears the root "
-                          "handlers without closing them, leaking the open log "
-                          "file",
-                   strict=False)
 def test_replacing_the_handlers_closes_the_previous_log_file(tab, tmp_path):
     """Re-applying the configuration must not leak the old file handle."""
     tab.settings.update_logging_config(log_dir=str(tmp_path / "one"),

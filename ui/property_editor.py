@@ -45,6 +45,12 @@ class PropertyEditorDialog(QDialog):
         self.available_groups = available_groups or []
         self.available_templates = available_templates or []
         self.original_values = {}
+        # Pending group memberships.  Every other field is edited in a widget
+        # and only written to the person by accept_changes(); the group buttons
+        # used to write straight through to the person, so their effect (and a
+        # dirty flag, and a possible UPDATE_PENDING status) survived Cancel.
+        # The dialog now edits this working copy instead.
+        self.pending_groups = list(person.group_memberships)
         
         self.setWindowTitle(f"Edit Properties - {person.first_name} {person.last_name}")
         self.setModal(True)
@@ -319,15 +325,15 @@ class PropertyEditorDialog(QDialog):
     # === GROUP MEMBERSHIP METHODS ===
     
     def refresh_group_display(self):
-        """Refresh the display of current groups"""
+        """Refresh the display of the pending group memberships"""
         self.current_groups_list.clear()
-        
-        for group in self.person.group_memberships:
+
+        for group in self.pending_groups:
             item = QListWidgetItem(f"{group.name} ({group.group_type})")
             item.setToolTip(group.dn)
             self.current_groups_list.addItem(item)
-        
-        if not self.person.group_memberships:
+
+        if not self.pending_groups:
             item = QListWidgetItem("No groups assigned")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.current_groups_list.addItem(item)
@@ -361,8 +367,8 @@ class PropertyEditorDialog(QDialog):
         # List with checkboxes
         list_widget = QListWidget()
         
-        current_dns = set(g.dn.lower() for g in self.person.group_memberships)
-        
+        current_dns = set(g.dn.lower() for g in self.pending_groups)
+
         for group in self.available_groups:
             item = QListWidgetItem(f"{group.name} - {group.dn}")
             item.setData(Qt.ItemDataRole.UserRole, group)
@@ -387,7 +393,7 @@ class PropertyEditorDialog(QDialog):
         layout.addWidget(button_box)
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Update person's groups
+            # Remember the selection; it reaches the person on OK
             new_groups = []
             for i in range(list_widget.count()):
                 item = list_widget.item(i)
@@ -395,7 +401,7 @@ class PropertyEditorDialog(QDialog):
                     group = item.data(Qt.ItemDataRole.UserRole)
                     new_groups.append(group)
 
-            self.person.group_memberships = new_groups
+            self.pending_groups = new_groups
             self.refresh_group_display()
             self._append_success("Updated group memberships")
     
@@ -477,30 +483,31 @@ class PropertyEditorDialog(QDialog):
             action = action_combo.currentData()
             
             if action == "replace":
-                self.person.group_memberships = template.groups.copy()
+                self.pending_groups = template.groups.copy()
             elif action == "add":
                 # Add groups not already present
-                current_dns = set(g.dn.lower() for g in self.person.group_memberships)
+                current_dns = set(g.dn.lower() for g in self.pending_groups)
                 for group in template.groups:
                     if group.dn.lower() not in current_dns:
-                        self.person.add_to_group(group)
-            
+                        self.pending_groups.append(group)
+                        current_dns.add(group.dn.lower())
+
             self.refresh_group_display()
             self._append_success(f"Applied template: {template.name}")
     
     def clear_all_groups(self):
         """Clear all group memberships"""
-        if not self.person.group_memberships:
+        if not self.pending_groups:
             return
-        
+
         reply = QMessageBox.question(
             self, "Clear Groups",
             "Remove all group memberships?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        
+
         if reply == QMessageBox.StandardButton.Yes:
-            self.person.group_memberships = []
+            self.pending_groups = []
             self.refresh_group_display()
             self._append_success("Cleared all groups")
     
@@ -558,29 +565,34 @@ class PropertyEditorDialog(QDialog):
         first = self.first_name_input.text().strip()
         last = self.last_name_input.text().strip()
         
+        # validate() rebuilds the status area, so the hints have to be appended
+        # after it - appending first only wrote them into a box that was about
+        # to be cleared.
+        self.validate()
+
         if first and last:
-            if (first != self.original_values['first_name'] or 
+            if (first != self.original_values['first_name'] or
                 last != self.original_values['last_name']):
-                
+
                 if self.person.ad_display_name:
                     self.validation_text.append(
                         "💡 Name changed - you may want to regenerate Display Name"
                     )
-        
+
                 if self.person.ad_username:
                     self.validation_text.append(
                         "💡 Name changed - you may want to regenerate Username"
                     )
-        self.validate()
-    
+
     def on_class_changed(self):
         """Handle class change"""
+        self.validate()
+
         if self.class_name_input.text() != self.original_values['class_name']:
             if self.person.ad_display_name:
                 self.validation_text.append(
                     "💡 Class changed - you may want to regenerate Display Name"
                 )
-        self.validate()
     
     def on_username_changed(self):
         """Handle username change"""
@@ -595,18 +607,33 @@ class PropertyEditorDialog(QDialog):
             QMessageBox.warning(self, "Missing Data", "First and last name required")
             return
         
-        username = generate_username(first, last, self.existing_usernames)
+        try:
+            username = generate_username(first, last, self.existing_usernames)
+        except (ValueError, IndexError, RuntimeError) as e:
+            # A name that folds to nothing usable (Cyrillic, punctuation only)
+            # or a login space that is exhausted used to escape as a traceback
+            # out of a button click.  Report it like every other generator does.
+            QMessageBox.warning(
+                self, "Generation Failed",
+                f"Failed to generate username:\n{str(e)}"
+            )
+            self._append_error(f"Username generation failed: {e}")
+            return
+
         self.username_input.setText(username)
-        self._append_success(f"Generated username: {username}")
+        # validate() rebuilds the whole status area from scratch, so it has to
+        # run BEFORE the confirmation is appended - otherwise it wiped the very
+        # message that tells the user what was generated.
         self.validate()
-    
+        self._append_success(f"Generated username: {username}")
+
     def generate_password(self):
         """Generate new password"""
         password = generate_password()
         self.password_display.setText(password)
-        self._append_success("Generated new password")
         self.validate()
-    
+        self._append_success("Generated new password")
+
     def generate_display_name(self):
         """Generate display name from name and class"""
         first = self.first_name_input.text().strip()
@@ -620,8 +647,8 @@ class PropertyEditorDialog(QDialog):
         
         display = generate_display_name(first, last, class_name)
         self.display_name_input.setText(display)
-        self._append_success(f"Generated display name: {display}")
         self.validate()
+        self._append_success(f"Generated display name: {display}")
     
     def validate(self):
         """
@@ -710,8 +737,10 @@ class PropertyEditorDialog(QDialog):
         self.person.home_directory = self.home_path_input.text().strip() or None
         self.person.home_drive = self.home_drive_input.text().strip() or None
         
-        # Group memberships already updated through dialog interactions
-        
+        # Group memberships - written here like every other field, so that
+        # Cancel leaves the person exactly as it was found
+        self.person.group_memberships = list(self.pending_groups)
+
         # Password policy
         self.person.password_must_change = self.change_password_checkbox.isChecked()
         self.person.password_cannot_change = self.cannot_change_checkbox.isChecked()

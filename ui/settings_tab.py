@@ -584,10 +584,16 @@ class SettingsTab(QWidget):
             log_file_val = self.log_dir_widget.get_log_filename()
 
             # --- Write (signals may fire, but values are already captured) ---
-            self.settings.set("theme", theme_val, category="general")
-            self.settings.set(
+            # Bug fix: set() returns False when the value could not be written
+            # (an unwritable settings file, a non-serialisable value).  Both
+            # results used to be discarded, so a completely failed save still
+            # ended in a dialog promising "The other settings were saved".
+            theme_saved = self.settings.set("theme", theme_val,
+                                            category="general")
+            warning_saved = self.settings.set(
                 "show_group_management_warning", warn_val, category="general"
             )
+            general_saved = theme_saved and warning_saved
             logging_saved = self.settings.update_logging_config(
                 log_level=log_level_val,
                 max_bytes=max_bytes_val,
@@ -598,19 +604,9 @@ class SettingsTab(QWidget):
                 log_file=log_file_val,
             )
 
-            if not logging_saved:
-                # update_logging_config() rejects values it cannot use and
-                # returns False.  Never report success in that case.
-                QMessageBox.critical(
-                    self, "Save Error",
-                    "The logging configuration could not be saved.\n\n"
-                    f"Log directory: {log_dir_val}\n"
-                    f"Log file: {log_file_val}\n\n"
-                    "Correct the values and try again. The other settings "
-                    "were saved."
-                )
-                logger.error("Logging configuration rejected: dir=%r file=%r",
-                             log_dir_val, log_file_val)
+            if not (general_saved and logging_saved):
+                self._report_save_failure(general_saved, logging_saved,
+                                          log_dir_val, log_file_val)
                 return
 
             QMessageBox.information(self, "Saved", "Settings saved successfully.")
@@ -618,6 +614,51 @@ class SettingsTab(QWidget):
         except Exception as e:
             logger.exception("Error saving settings")
             QMessageBox.critical(self, "Save Error", f"Failed to save settings:\n{e}")
+
+    def _report_save_failure(self, general_saved: bool, logging_saved: bool,
+                             log_dir_val: str, log_file_val: str) -> None:
+        """
+        Tell the user exactly which part of the save failed.
+
+        Only the categories that really reached the disk may be reported as
+        saved: when the settings file itself cannot be written, both writes
+        fail and nothing at all was stored.
+        """
+        if general_saved:
+            # Only update_logging_config() refused - it validates its values.
+            message = (
+                "The logging configuration could not be saved.\n\n"
+                f"Log directory: {log_dir_val}\n"
+                f"Log file: {log_file_val}\n\n"
+                "Correct the values and try again. The other settings "
+                "were saved."
+            )
+            logger.error("Logging configuration rejected: dir=%r file=%r",
+                         log_dir_val, log_file_val)
+        elif logging_saved:
+            message = (
+                "The appearance and general settings could not be saved.\n\n"
+                f"Settings file: {self.settings.settings_file}\n\n"
+                "Check that the file and its folder can be written to, then "
+                "try again."
+            )
+            logger.error("General settings could not be written to %s",
+                         self.settings.settings_file)
+        else:
+            message = (
+                "The settings could not be stored.\n\n"
+                f"Settings file: {self.settings.settings_file}\n"
+                f"Log directory: {log_dir_val}\n"
+                f"Log file: {log_file_val}\n\n"
+                "Your changes were not stored. Check that the settings "
+                "file can be written to and that the log path is valid, "
+                "then try again."
+            )
+            logger.error("Nothing could be saved: settings file %s, "
+                         "log dir=%r file=%r",
+                         self.settings.settings_file, log_dir_val, log_file_val)
+
+        QMessageBox.critical(self, "Save Error", message)
 
     def _ensure_usable_log_path(self, file_logging_enabled: bool) -> bool:
         """
@@ -741,7 +782,17 @@ class SettingsTab(QWidget):
         level = getattr(logging, level_name, logging.INFO)
         root = logging.getLogger()
         root.setLevel(level)
-        root.handlers.clear()
+
+        # Was: root.handlers.clear() - which dropped the handlers without
+        # closing them, so the previous rotating log file stayed open for the
+        # rest of the session (on Windows it could then not be renamed or
+        # deleted, and its buffered records were never flushed).
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:                        # a broken handler must
+                pass                                 # not stop the reconfig
 
         formatter = logging.Formatter(fmt, datefmt=datefmt)
 

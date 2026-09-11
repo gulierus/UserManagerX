@@ -16,6 +16,97 @@ from services.ldap_compat import MODIFY_REPLACE
 logger = logging.getLogger(__name__)
 
 
+#: Characters that carry a special meaning inside an RDN value (RFC 4514).
+_DN_SPECIAL_CHARACTERS = '\\,+"<>;='
+
+
+def escape_dn_value(value: str) -> str:
+    """
+    Escape a value so it stays a *single* component of a distinguished name.
+
+    ``6,A`` -> ``6\\,A``
+
+    DN components used to be built by plain string formatting, so a class name
+    (or a display name) containing a comma silently split the DN into two extra
+    components: the account was created somewhere else in the tree, or the
+    server rejected the request as invalid DN syntax.
+
+    Args:
+        value: The raw attribute value.
+
+    Returns:
+        The value with every RFC 4514 special character escaped.
+    """
+    if not value:
+        return ''
+
+    escaped = ''.join(
+        '\\' + character if character in _DN_SPECIAL_CHARACTERS else character
+        for character in str(value)
+    )
+
+    # A trailing space is significant and is escaped first: every backslash of
+    # the original has already been doubled above, so a space at the end of
+    # *escaped* can only come from a trailing space of the original.  Testing
+    # for an already-escaped space here instead ("\\ ") also matched a value
+    # ending in backslash + space and left that space unescaped.
+    if escaped.endswith(' '):
+        escaped = escaped[:-1] + '\\ '
+
+    # A leading '#' or space is significant as well.  This has to happen after
+    # the trailing space, otherwise a value consisting of a single space is
+    # escaped twice.
+    if escaped[:1] in ('#', ' '):
+        escaped = '\\' + escaped
+
+    return escaped
+
+
+def unescape_dn_value(value: str) -> str:
+    """Inverse of :func:`escape_dn_value` - ``6\\,A`` becomes ``6,A``."""
+    result = []
+    index = 0
+    while index < len(value):
+        if value[index] == '\\' and index + 1 < len(value):
+            result.append(value[index + 1])
+            index += 2
+        else:
+            result.append(value[index])
+            index += 1
+    return ''.join(result)
+
+
+def first_rdn_value(dn: str) -> str:
+    """
+    The plain value of the first component of *dn*.
+
+    ``OU=Trida-6\\,A,DC=skola`` -> ``Trida-6,A``.  Splitting on every comma and
+    on every '=' mangled exactly those names that had to be escaped.
+
+    The components are walked character by character rather than split with a
+    "comma not preceded by a backslash" pattern: in ``OU=Trida-6\\\\,DC=skola``
+    the comma *is* preceded by a backslash, but that backslash is itself
+    escaped, so the comma really is the separator.
+    """
+    characters = []
+    escaped = False
+    for character in dn or '':
+        if escaped:
+            characters.append(character)
+            escaped = False
+        elif character == '\\':
+            characters.append(character)
+            escaped = True
+        elif character == ',':
+            break
+        else:
+            characters.append(character)
+
+    first_component = ''.join(characters)
+    _, separator, value = first_component.partition('=')
+    return unescape_dn_value(value if separator else first_component)
+
+
 class ConflictStrategy(Enum):
     """Strategy for resolving conflicts"""
     LOCAL_WINS = "local_wins"
@@ -352,10 +443,25 @@ class SyncPlanner:
                 if not person.is_dirty() and person.ad_status == ADStatus.SYNCED:
                     continue  # Nothing to do
                 
+                if person.ad_status == ADStatus.AMBIGUOUS:
+                    # Several AD accounts match this person, so we do not know
+                    # which one is hers.  Creating a user would add yet another
+                    # duplicate - the ambiguity has to be resolved by the user
+                    # first, so she is left out of the plan entirely.
+                    logger.warning(
+                        "Skipping %s %s (%s): several AD accounts match, "
+                        "resolve the ambiguity before synchronising",
+                        person.first_name, person.last_name, person.class_name
+                    )
+                    continue
+                
                 if person.ad_status in [ADStatus.NOT_IN_AD, ADStatus.UNKNOWN] or not person.ad_dn:
                     # New user to create
                     if self._has_required_ad_data(person):
-                        target_ou = f"OU=Trida-{person.class_name},{base_dn}"
+                        # The class name is data, not DN syntax: a comma in it
+                        # used to split the OU into two components.
+                        target_ou = (f"OU=Trida-{escape_dn_value(person.class_name)}"
+                                     f",{base_dn}")
                         attributes = self._prepare_creation_attributes(person, base_dn)
                         plan.create_operations.append(
                             CreateOperation(person, target_ou, attributes)
@@ -363,8 +469,13 @@ class SyncPlanner:
                     else:
                         plan.incomplete_persons.append(person)
                 
-                elif person.ad_status == ADStatus.EXISTS_IN_AD:
-                    # Update existing user
+                else:
+                    # Everything that is left has a DN and is known to AD:
+                    # EXISTS_IN_AD, UPDATE_PENDING (a SYNCED person that was
+                    # edited) or a still dirty SYNCED person.  Only
+                    # EXISTS_IN_AD used to be handled here, so every edit of an
+                    # already synchronised person was silently dropped from the
+                    # plan and never reached Active Directory.
                     changes = person.get_changes()
                     if not changes:
                         continue
@@ -565,7 +676,9 @@ class PersonsSyncService:
         try:
             # Ensure OU exists first
             if not self.ad_client.ou_exists(create_op.target_ou):
-                ou_name = create_op.target_ou.split(',')[0].split('=')[1]
+                # Escaped RDNs must not be split on every comma/'=' - the OU
+                # name of "OU=Trida-6\,A,..." is "Trida-6,A", not "Trida-6\".
+                ou_name = first_rdn_value(create_op.target_ou)
                 logger.info(f"Creating OU: {create_op.target_ou}")
                 if not self.ad_client.create_ou(create_op.target_ou, ou_name):
                     return OperationResult(
@@ -574,9 +687,10 @@ class PersonsSyncService:
                         message=f"Failed to create OU: {create_op.target_ou}"
                     )
             
-            # Build DN
+            # Build DN - the CN is user data and is escaped for the same
+            # reason as the class name in the target OU.
             cn = person.ad_display_name or person.ad_username
-            dn = f"CN={cn},{create_op.target_ou}"
+            dn = f"CN={escape_dn_value(cn)},{create_op.target_ou}"
             
             # Prepare attributes with password policy
             attributes = create_op.attributes.copy()
@@ -594,6 +708,13 @@ class PersonsSyncService:
                     status='FAILED',
                     message="Failed to create user in AD"
                 )
+            
+            # The account exists from here on, so remember where it is *before*
+            # anything else can fail.  The DN used to be recorded only at the
+            # very end, so a failing password step left the person without a
+            # DN and the next synchronisation created a second account.
+            person.ad_dn = dn
+            person.ad_status = ADStatus.EXISTS_IN_AD
             
             # Set password (must be done after creation)
             if person.ad_password:
@@ -614,7 +735,6 @@ class PersonsSyncService:
                     )
             
             # Update person with successful creation
-            person.ad_dn = dn
             person.ad_status = ADStatus.SYNCED
             person.reset_dirty()
             
@@ -774,13 +894,20 @@ class PersonsSyncService:
 
     def _map_field_to_ldap(self, field_name: str) -> Optional[str]:
         """Map person field name to LDAP attribute name"""
+        # The home directory and drive are editable in the property editor and
+        # are tracked as dirty fields, but they were missing from this mapping:
+        # the change was mapped to None, quietly dropped, and the sync still
+        # reported success.  ad_ou_path stays unmapped on purpose - moving an
+        # object needs a modify-DN operation, not an attribute write.
         mapping = {
             'first_name': 'givenName',
             'last_name': 'sn',
             'ad_username': 'sAMAccountName',
             'ad_email': 'mail',
             'ad_display_name': 'displayName',
-            'ad_description': 'description'
+            'ad_description': 'description',
+            'home_directory': 'homeDirectory',
+            'home_drive': 'homeDrive'
         }
         return mapping.get(field_name)
 

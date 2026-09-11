@@ -1229,9 +1229,11 @@ def _timed_dialog(make_dialog, duration_ms, is_deterministic=True):
     (0, "0.0 seconds"),
     (1500, "1.5 seconds"),
     (59000, "59.0 seconds"),
+    (59960, "1 min 0 sec"),      # rounds up over the minute boundary
     (60000, "1 min 0 sec"),
     (90000, "1 min 30 sec"),
     (3599000, "59 min 59 sec"),
+    (3599600, "1 hr 0 min"),     # rounds up over the hour boundary
     (3600000, "1 hr 0 min"),
     (7530000, "2 hr 5 min"),
 ])
@@ -1629,8 +1631,6 @@ def test_cancelling_a_paused_worker_wakes_it_up_and_finishes_it(qapp, threaded):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: a successful indeterminate task leaves the "
-                          "progress bar sweeping forever", strict=False)
 def test_a_successful_indeterminate_task_stops_the_busy_animation(make_dialog):
     """Success has to leave busy mode, exactly like Cancelled and Failed do."""
     dialog = make_dialog(SucceedingTask(is_deterministic=False))
@@ -1639,12 +1639,12 @@ def test_a_successful_indeterminate_task_stops_the_busy_animation(make_dialog):
     dialog.on_task_finished(True, QDateTime.currentDateTime(), "hotovo")
 
     assert dialog.progress_bar.maximum() == 100
+    assert dialog.progress_bar.value() == 100
+    assert dialog.progress_bar.format() == "Complete"
 
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: durations are rendered as '1 min 60 sec' because "
-                          "the seconds are rounded independently", strict=False)
 def test_a_duration_is_never_rendered_with_sixty_seconds(make_dialog):
     """119.6 s is 2 minutes, not '1 min 60 sec'."""
     dialog = _timed_dialog(make_dialog, 119600)
@@ -1652,13 +1652,11 @@ def test_a_duration_is_never_rendered_with_sixty_seconds(make_dialog):
     dialog.on_task_finished(True, dialog.task.end_time, "hotovo")
 
     assert "60 sec" not in dialog.duration_label.text()
+    assert dialog.duration_label.text() == "<b>Duration:</b> 2 min 0 sec"
 
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: progress updates between the cancel click and "
-                          "task_cancelled overwrite the 'Cancelling task...' "
-                          "feedback", strict=False)
 def test_progress_after_the_cancel_click_keeps_the_cancelling_feedback(make_dialog):
     """Once the user pressed Cancel the dialog must stop showing progress."""
     task = NonStartingTask(is_deterministic=True)
@@ -1671,3 +1669,5 @@ def test_progress_after_the_cancel_click_keeps_the_cancelling_feedback(make_dial
     dialog.on_progress_changed(30, "Načítám žáky")     # late update from the worker
 
     assert dialog.operation_label.text() == "Cancelling task..."
+    assert dialog.progress_bar.value() == 25
+    assert dialog.progress_bar.format() == "25% - Načítám třídy"

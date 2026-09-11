@@ -186,7 +186,28 @@ class StudentManagementSystem(QMainWindow):
         logger.info("=" * 80)
         logger.info("Closing Student Management System")
         logger.info("=" * 80)
-        
+
+        # Qt delivers the close event to the window only, never to the widgets
+        # inside it, so the tabs never got the chance to clean up after
+        # themselves: LogViewerTab kept its RealTimeLogHandler on the root
+        # logger, its 5 s refresh timer running and its loader/filter threads
+        # unjoined.  Closing every page runs that page's own closeEvent.
+        #
+        # The event stops there: a page's *children* (the AD management widget
+        # inside the Operations tab, for instance) still get no close event, so
+        # their own cleanup is a separate problem.  The guard below only catches
+        # a page that is already gone - PyQt aborts the process on an exception
+        # raised inside a closeEvent, so that cannot be caught from here.
+        try:
+            for index in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(index)
+                try:
+                    tab.close()
+                except Exception as e:
+                    logger.warning(f"Error closing tab {index}: {e}")
+        except Exception as e:
+            logger.warning(f"Error closing application tabs: {e}")
+
         # Cleanup font manager temporary files
         try:
             font_manager = get_font_manager()

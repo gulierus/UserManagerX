@@ -34,6 +34,9 @@ from services.ad_services import (
     SyncPlanner,
     SyncResult,
     UpdateOperation,
+    escape_dn_value,
+    first_rdn_value,
+    unescape_dn_value,
 )
 from services.ldap_compat import MODIFY_REPLACE
 from utils.ad_utils import ValidationIssue
@@ -211,6 +214,14 @@ def fields_of(issues):
 def rdn_count(dn):
     """Number of RDNs in *dn*, honouring backslash-escaped commas."""
     return len(re.split(r"(?<!\\),", dn))
+
+
+def trailing_space_is_escaped(escaped):
+    """True when *escaped* has no trailing space a directory would strip."""
+    if not escaped.endswith(' '):
+        return True
+    body = escaped[:-1]
+    return (len(body) - len(body.rstrip('\\'))) % 2 == 1
 
 
 # ===========================================================================
@@ -901,8 +912,6 @@ def test_create_sync_plan_of_an_empty_source_is_an_empty_plan(planner, make_sour
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: UPDATE_PENDING persons are dropped from the plan",
-                   strict=False)
 def test_create_sync_plan_plans_an_update_for_an_edited_already_synced_person(
         planner, ad_person, make_source, make_class):
     """Editing a SYNCED person (-> UPDATE_PENDING) must still reach Active Directory."""
@@ -917,8 +926,6 @@ def test_create_sync_plan_plans_an_update_for_an_edited_already_synced_person(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: AMBIGUOUS persons are scheduled for creation",
-                   strict=False)
 def test_create_sync_plan_never_creates_an_ambiguous_person(
         planner, ad_person, make_source, make_class):
     """A person matching several AD accounts must not get yet another one."""
@@ -943,8 +950,6 @@ def test_create_sync_plan_derives_the_upn_suffix_from_the_base_dn(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: class name is not DN-escaped in the target OU",
-                   strict=False)
 def test_create_sync_plan_escapes_a_class_name_containing_a_comma(
         planner, ad_person, make_source, make_class):
     """A comma in the class name must not split the OU into two components."""
@@ -954,6 +959,22 @@ def test_create_sync_plan_escapes_a_class_name_containing_a_comma(
     plan = planner.create_sync_plan(source, "DC=skola,DC=local")
 
     assert rdn_count(plan.create_operations[0].target_ou) == 3
+
+
+@pytest.mark.parametrize("value", [
+    "6.A", "6,A", "Novák, Jan", "a+b", "a=b", 'q"x', "a;b", "<a>",
+    "#první", " mezera", "mezera ", " ", "  ",
+    "zpetne\\lomitko", "konec\\", "konec\\ ",
+])
+def test_an_escaped_dn_value_is_one_rdn_and_reads_back_unchanged(value):
+    """Whatever is escaped into an RDN must come out of it unchanged."""
+    escaped = escape_dn_value(value)
+    dn = f"OU={escaped},DC=skola,DC=local"
+
+    assert unescape_dn_value(escaped) == value
+    assert first_rdn_value(dn) == value          # the name create_ou is given
+    assert trailing_space_is_escaped(escaped)    # a server strips a bare one
+    assert escaped[:1] not in ('#', ' ')         # a bare lead is significant
 
 
 # ===========================================================================
@@ -1677,8 +1698,6 @@ def test_categorize_result_files_every_status(sync_service, make_person, status,
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: home_directory changes are silently dropped",
-                   strict=False)
 def test_execute_sync_writes_a_changed_home_directory_to_ad(
         sync_service, ad_person, no_group_service):
     """A home directory edited in the UI must reach AD, not vanish on "success"."""
@@ -1696,8 +1715,6 @@ def test_execute_sync_writes_a_changed_home_directory_to_ad(
 
 
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: DN is not recorded when the password step fails",
-                   strict=False)
 def test_execute_sync_records_the_dn_of_a_user_created_without_a_password(
         sync_service, ad_person, no_group_service):
     """The account exists in AD, so the person must remember its DN."""

@@ -538,11 +538,6 @@ class TestMainWindow:
         assert QApplication.palette().color(QPalette.ColorRole.Window) == expected
 
     @pytest.mark.bug
-    @pytest.mark.xfail(
-        reason="BUG: closeEvent never closes the tabs, so LogViewerTab keeps "
-               "its handler on the root logger and its 5 s refresh timer",
-        strict=False,
-    )
     def test_closing_the_window_detaches_the_log_viewer_log_handler(
             self, window, qapp):
         """The log viewer's root-logger handler must not outlive the window."""
@@ -718,11 +713,6 @@ class TestOperationsTabSourceSelection:
             ["(Select Source)", "Same", "Same"]
 
     @pytest.mark.bug
-    @pytest.mark.xfail(
-        reason="BUG: OperationsTab keeps the deleted source in current_source "
-               "and in all three operation widgets",
-        strict=False,
-    )
     def test_removing_the_selected_source_disarms_the_operation_widgets(
             self, ops_tab, source_manager):
         """A deleted source must not stay operable behind '(Select Source)'."""
@@ -739,11 +729,6 @@ class TestOperationsTabSourceSelection:
         assert ops_tab.json_widget.current_source is None
 
     @pytest.mark.bug
-    @pytest.mark.xfail(
-        reason="BUG: OperationsTab does not listen to source_modified, so the "
-               "PDF class list and the JSON statistics go stale",
-        strict=False,
-    )
     def test_a_modified_source_refreshes_every_operation_widget(
             self, ops_tab, source_manager):
         """Editing a source on tab 2 must be visible on tab 3 immediately."""
@@ -797,11 +782,6 @@ class TestOperationsTabOperationList:
         assert ops_tab.operation_stack.currentIndex() == 2
 
     @pytest.mark.bug
-    @pytest.mark.xfail(
-        reason="BUG: the operation list has no current row while the stack "
-               "already shows the AD management page",
-        strict=False,
-    )
     def test_the_initially_visible_operation_is_the_highlighted_one(self, ops_tab):
         """The page on screen and the highlighted list row must agree."""
         assert ops_tab.operation_stack.currentWidget() is ops_tab.ad_widget

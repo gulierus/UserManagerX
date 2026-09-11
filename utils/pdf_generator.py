@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict, Any, Union
 from datetime import datetime
 from io import BytesIO
+from xml.sax.saxutils import escape as xml_escape
 
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
@@ -175,11 +176,16 @@ class PDFGenerator:
         Returns:
             PDF data as bytes
         """
+        # The document is rendered FIRST and the target file is only opened
+        # once the bytes exist.  Opening it up front truncated an existing
+        # export, so a failing generation destroyed the previous PDF.
+        buffer = BytesIO()
+        pdf_data = self.generate_to_buffer(buffer)
+
         with open(file_path, 'wb') as f:
-            buffer = BytesIO()
-            pdf_data = self.generate_to_buffer(buffer)
             f.write(pdf_data)
-            return pdf_data
+
+        return pdf_data
         
     def _generate_pdf(self, buffer: BytesIO):
         """Internal PDF generation logic"""
@@ -236,7 +242,10 @@ class PDFGenerator:
             fontName=self.reportlab_font
         )
         
-        title = Paragraph(self.title_text, title_style)
+        # Same reason as the table cells: Paragraph parses its text as
+        # mini-HTML, so a free-text title such as 'Hesla <trida>X' silently
+        # lost '<trida>' and one like 'Hesla a<b' aborted the whole export.
+        title = Paragraph(xml_escape(self.title_text), title_style)
         elements.append(title)
         elements.append(Spacer(1, 0.5 * cm))
         
@@ -363,9 +372,12 @@ class PDFGenerator:
                 
                 # Handle text wrapping
                 if self.text_wrap:
-                    # Use Paragraph for wrapping
+                    # Use Paragraph for wrapping.  Paragraph parses its text as
+                    # mini-HTML, so raw cell data has to be escaped: '<' used to
+                    # swallow everything up to the next '>' (passwords like
+                    # 'P@ss<word>X' lost characters) or abort the whole export.
                     cell_style = self._get_cell_style()
-                    cell = Paragraph(str(value), cell_style)
+                    cell = Paragraph(xml_escape(str(value)), cell_style)
                 else:
                     # Plain text
                     cell = str(value)

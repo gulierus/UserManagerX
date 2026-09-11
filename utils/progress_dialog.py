@@ -267,9 +267,13 @@ class ProgressDialog(QDialog):
         Handle progress update.
 
         Updates that arrive after the task was cancelled are ignored so the
-        progress bar cannot fall back to a stale "in progress" text.
+        progress bar cannot fall back to a stale "in progress" text.  The check
+        asks :meth:`was_cancelled` (not only the internal flag) because the
+        worker keeps reporting between the Cancel click and the ``task_cancelled``
+        signal; those late updates used to overwrite the "Cancelling task..."
+        feedback the user had just triggered.
         """
-        if self._was_cancelled:
+        if self.was_cancelled():
             return
 
         # Ensure message is not None
@@ -337,7 +341,11 @@ class ProgressDialog(QDialog):
             # Set progress to 100% for deterministic tasks
             if self.task.is_deterministic:
                 self.progress_bar.setValue(100)
-                self.progress_bar.setFormat("100% - Complete")
+            # A finished task has to leave the indeterminate ("busy") mode as
+            # well - Cancelled and Failed already did, but success used to keep
+            # the bar sweeping forever after the task was over.  The bar is
+            # shown full, because the task really did run to the end.
+            self._set_progress_text("Complete", indeterminate_value=100)
         elif cancelled:
             self._show_cancelled_state()
         else:
@@ -376,12 +384,14 @@ class ProgressDialog(QDialog):
         self.operation_label.setText("Task cancelled by user")
         self._set_progress_text("Cancelled")
 
-    def _set_progress_text(self, state: str):
+    def _set_progress_text(self, state: str, indeterminate_value: int = 0):
         """
         Overwrite the progress-bar text with the given state.
 
         Deterministic bars keep their numeric value so the user can still see
-        how far the task got before it stopped.
+        how far the task got before it stopped.  ``indeterminate_value`` is the
+        value a busy bar falls back to when it leaves the animation: empty for
+        an interrupted run, full for a completed one.
         """
         try:
             if self.task.is_deterministic:
@@ -389,7 +399,7 @@ class ProgressDialog(QDialog):
             else:
                 # Leave indeterminate mode so the bar stops animating
                 self.progress_bar.setMaximum(100)
-                self.progress_bar.setValue(0)
+                self.progress_bar.setValue(indeterminate_value)
                 self.progress_bar.setFormat(state)
         except RuntimeError:  # pragma: no cover - widget already destroyed
             logger.debug("Progress bar no longer available")
@@ -476,17 +486,23 @@ class ProgressDialog(QDialog):
         else:
             duration_sec = duration_ms / 1000.0
             
-            # Format duration
-            if duration_sec < 60:
-                duration_str = f"{duration_sec:.1f} seconds"
-            elif duration_sec < 3600:
-                minutes = int(duration_sec / 60)
-                seconds = duration_sec % 60
-                duration_str = f"{minutes} min {seconds:.0f} sec"
+            # Format duration.
+            # The parts used to be rounded independently of each other, so
+            # 119.6 s became "1 min 60 sec" (int(119.6 / 60) = 1 minute plus
+            # 59.6 s rounded up to 60).  Rounding first and splitting the
+            # rounded value afterwards keeps the parts consistent, and lets a
+            # value that rounds up over a unit boundary move to the next unit.
+            rounded_sec = round(duration_sec, 1)
+            if rounded_sec < 60:
+                duration_str = f"{rounded_sec:.1f} seconds"
             else:
-                hours = int(duration_sec / 3600)
-                minutes = int((duration_sec % 3600) / 60)
-                duration_str = f"{hours} hr {minutes} min"
+                total_seconds = int(round(duration_sec))
+                if total_seconds < 3600:
+                    minutes, seconds = divmod(total_seconds, 60)
+                    duration_str = f"{minutes} min {seconds} sec"
+                else:
+                    hours, remainder = divmod(total_seconds, 3600)
+                    duration_str = f"{hours} hr {remainder // 60} min"
         
         # Update labels
         self.start_time_label.setText(f"<b>Started:</b> {start.toString('yyyy-MM-dd hh:mm:ss')}")

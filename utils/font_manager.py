@@ -48,6 +48,10 @@ class FontManager:
         # Maps ReportLab font name -> font file path (for custom fonts)
         self.reportlab_font_files: Dict[str, str] = {}
         
+        # Maps (resource path, Qt family) -> ReportLab font name, so one face
+        # is spooled and registered exactly once
+        self._registered_faces: Dict[Tuple[str, str], str] = {}
+        
         # List of available font families for UI
         self.available_families: List[str] = []
         
@@ -183,12 +187,33 @@ class FontManager:
         Args:
             family_name: Qt font family name
             font_data: Raw font file data
-            resource_path: Original resource path (for logging)
+            resource_path: Original resource path (identifies the face, and
+                names it when its family name is already taken)
         """
         try:
             from reportlab.pdfbase import pdfmetrics
             from reportlab.pdfbase.ttfonts import TTFont
             import tempfile
+            
+            # ReportLab registers one *file* per font name, while several files
+            # (regular, bold, oblique, ...) share a single Qt family, so the
+            # family name alone can only ever name one of them.  Naming every
+            # face after its family made the second face overwrite the first
+            # registration and orphan its temp file - which cleanup() then had
+            # no way of deleting.  Each face now keeps its own name and entry.
+            face_key = (resource_path, family_name)
+            rl_font_name = self._registered_faces.get(face_key)
+            
+            if rl_font_name is not None:
+                spooled = self.reportlab_font_files.get(rl_font_name)
+                if spooled and os.path.exists(spooled):
+                    # The very same file of the very same family: registering it
+                    # again would only spool a second copy of identical data.
+                    logger.debug(f"Font already registered with ReportLab: "
+                                 f"{family_name} -> {rl_font_name}")
+                    return
+            else:
+                rl_font_name = self._reportlab_face_name(family_name, resource_path)
             
             # ReportLab needs a file path, so write to temp file
             # We'll keep these temp files for the lifetime of the application
@@ -197,16 +222,15 @@ class FontManager:
                 tmp.write(font_data)
                 tmp_path = tmp.name
             
-            # Register with ReportLab
-            # Use family name as ReportLab font name for simplicity
-            rl_font_name = family_name.replace(' ', '')  # Remove spaces for ReportLab
-            
             try:
                 pdfmetrics.registerFont(TTFont(rl_font_name, tmp_path))
                 
-                # Store mapping
-                self.qt_to_reportlab_map[family_name] = rl_font_name
+                # Store mapping - the family keeps resolving to the face that was
+                # registered first (the regular one); a later face of the same
+                # family stays reachable under its own name.
+                self.qt_to_reportlab_map.setdefault(family_name, rl_font_name)
                 self.reportlab_font_files[rl_font_name] = tmp_path
+                self._registered_faces[face_key] = rl_font_name
                 
                 logger.debug(f"Registered font with ReportLab: {family_name} -> {rl_font_name}")
                 
@@ -221,6 +245,35 @@ class FontManager:
         except Exception as e:
             logger.exception(f"Error registering font with ReportLab: {family_name}")
             
+    def _reportlab_face_name(self, family_name: str, resource_path: str) -> str:
+        """
+        Pick a free ReportLab font name for one font face
+        
+        Args:
+            family_name: Qt font family name (shared by every face of a family)
+            resource_path: Path of the file holding this particular face
+            
+        Returns:
+            A ReportLab font name that is not registered yet
+        """
+        # Use family name as ReportLab font name for simplicity
+        base_name = family_name.replace(' ', '')  # Remove spaces for ReportLab
+        
+        if base_name not in self.reportlab_font_files:
+            return base_name
+        
+        # The family name already belongs to another face, so name this one
+        # after its own file instead (e.g. "DejaVuSans-Bold")
+        face_name = Path(resource_path).stem.replace(' ', '') or base_name
+        candidate = face_name
+        counter = 2
+        
+        while candidate in self.reportlab_font_files:
+            candidate = f"{face_name}-{counter}"
+            counter += 1
+        
+        return candidate
+        
     def get_available_families(self) -> List[str]:
         """
         Get list of available font families for UI

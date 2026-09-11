@@ -13,6 +13,33 @@ from models import Source, Class, Person
 
 logger = logging.getLogger(__name__)
 
+# Canonical spelling of the organizational units that hold a class.
+CLASS_OU_PREFIX = 'Trida-'
+
+
+def _attribute_text(entry, name: str) -> str:
+    """
+    Read one LDAP attribute of an ldap3 entry as text.
+
+    ldap3 exposes every *requested* attribute on the entry even when the
+    directory returned no value for it - ``entry.givenName.value`` is then
+    ``None``.  Wrapping that in ``str()`` produced the literal string
+    ``'None'``, which looks like a real name and kept nameless accounts.
+    A value the directory did not return must read as an empty string.
+    """
+    try:
+        attribute = entry[name]
+    except (KeyError, AttributeError):
+        # The attribute was not requested / does not exist on this entry.
+        return ''
+
+    value = attribute.value
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return ''
+    return str(value)
+
 
 class ActiveDirectorySourceWidget(QWidget):
     """Widget for loading data from Active Directory"""
@@ -97,6 +124,25 @@ class ActiveDirectorySourceWidget(QWidget):
         
         layout.addStretch()
         
+    def _ou_search_filter(self) -> str:
+        """
+        Build the LDAP filter for the class units in the selected spelling.
+
+        The 'Search Format' combo box was never read - every run searched for
+        'Trida-*' regardless of the choice.  The selected format now decides
+        how the prefix is spelled in the filter, and 'Both' asks for either
+        spelling explicitly.
+        """
+        search_format = self.format_combo.currentData()
+        uppercase = f'(ou={CLASS_OU_PREFIX}*)'
+        lowercase = f'(ou={CLASS_OU_PREFIX.lower()}*)'
+
+        if search_format == 'lowercase':
+            return lowercase
+        if search_format == 'both':
+            return f'(|{uppercase}{lowercase})'
+        return uppercase
+
     def on_load(self):
         """Load data from Active Directory"""
         server = self.server_input.text().strip()
@@ -108,6 +154,10 @@ class ActiveDirectorySourceWidget(QWidget):
             QMessageBox.warning(self, "Missing Information", 
                               "Please fill in all fields")
             return
+        
+        # The progress dialog only exists once the ldap3 import succeeded;
+        # the error handlers below must not assume it was created.
+        progress = None
         
         try:
             from ldap3 import Server, Connection, ALL, SUBTREE
@@ -132,25 +182,30 @@ class ActiveDirectorySourceWidget(QWidget):
             # Search for OUs matching pattern Trida-*
             conn.search(
                 search_base=base_dn,
-                search_filter='(ou=Trida-*)',
+                search_filter=self._ou_search_filter(),
                 search_scope=SUBTREE,
                 attributes=['ou', 'distinguishedName']
             )
             
             class_ous = []
             for entry in conn.entries:
-                ou_name = str(entry.ou.value) if hasattr(entry, 'ou') else None
-                if ou_name and ou_name.startswith('Trida-'):
+                ou_name = _attribute_text(entry, 'ou')
+                # LDAP compares 'ou' case-insensitively, so the directory also
+                # returns units spelled 'trida-7b'.  A case-sensitive
+                # startswith() silently dropped exactly those units.
+                if ou_name and ou_name.lower().startswith(CLASS_OU_PREFIX.lower()):
                     class_ous.append({
                         'name': ou_name,
-                        'dn': str(entry.distinguishedName)
+                        'dn': _attribute_text(entry, 'distinguishedName') or entry.entry_dn
                     })
             
             # Load users from each class OU
             for ou_info in class_ous:
                 progress.setLabelText(f"Loading students from {ou_info['name']}...")
                 
-                class_name = ou_info['name'].replace('Trida-', '')  # e.g., "6A"
+                # Strip the prefix in the spelling the directory actually used
+                # ('Trida-6A' -> '6A', 'trida-7b' -> '7b').
+                class_name = ou_info['name'][len(CLASS_OU_PREFIX):]
                 cls = Class(name=class_name)
                 
                 # Search for users in this OU
@@ -158,12 +213,15 @@ class ActiveDirectorySourceWidget(QWidget):
                     search_base=ou_info['dn'],
                     search_filter='(objectClass=user)',
                     search_scope=SUBTREE,
-                    attributes=['givenName', 'sn', 'displayName', 'sAMAccountName', 'mail']
+                    # 'distinguishedName' has to be requested explicitly - it was
+                    # read from the entry below without ever being asked for.
+                    attributes=['givenName', 'sn', 'displayName', 'sAMAccountName',
+                                'mail', 'distinguishedName']
                 )
                 
                 for entry in conn.entries:
-                    first_name = str(entry.givenName.value) if hasattr(entry, 'givenName') else ''
-                    last_name = str(entry.sn.value) if hasattr(entry, 'sn') else ''
+                    first_name = _attribute_text(entry, 'givenName')
+                    last_name = _attribute_text(entry, 'sn')
                     
                     if not first_name or not last_name:
                         continue
@@ -172,11 +230,12 @@ class ActiveDirectorySourceWidget(QWidget):
                         first_name=first_name,
                         last_name=last_name,
                         class_name=class_name,
-                        ad_username=str(entry.sAMAccountName.value) if hasattr(entry, 'sAMAccountName') else None,
-                        ad_display_name=str(entry.displayName.value) if hasattr(entry, 'displayName') else None,
-                        ad_email=str(entry.mail.value) if hasattr(entry, 'mail') else None,
+                        ad_username=_attribute_text(entry, 'sAMAccountName') or None,
+                        ad_display_name=_attribute_text(entry, 'displayName') or None,
+                        ad_email=_attribute_text(entry, 'mail') or None,
                     )
-                    person.metadata['ad_dn'] = str(entry.distinguishedName)
+                    person.metadata['ad_dn'] = (_attribute_text(entry, 'distinguishedName')
+                                                or entry.entry_dn)
                     cls.add_person(person)
                 
                 source.add_class(cls)
@@ -203,11 +262,15 @@ class ActiveDirectorySourceWidget(QWidget):
             logger.info(f"Successfully loaded AD source: {source.name}")
             
         except ImportError:
-            progress.close()
+            # The import is the first statement of the try block, so the progress
+            # dialog usually does not exist yet - closing it unconditionally
+            # raised NameError instead of telling the user about ldap3.
+            if progress is not None:
+                progress.close()
             QMessageBox.critical(self, "Error", 
                                "ldap3 package is not installed")
         except Exception as e:
-            if 'progress' in locals():
+            if progress is not None:
                 progress.close()
             logger.exception("Error loading from Active Directory")
             QMessageBox.critical(self, "Error", f"Failed to connect: {str(e)}")

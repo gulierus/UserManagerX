@@ -19,10 +19,11 @@ class NamePartSpec:
     Specification for extracting part of a name
     
     Attributes:
-        part_index: Which part to use (1=first, 2=second, -1=last, 0=all)
+        part_index: Which part to use (1=first, 2=second, -1=last,
+            0=all parts joined together, None=the whole name unchanged)
         char_count: How many characters to use (None=all)
     """
-    part_index: int = 1  # Default: use first part
+    part_index: Optional[int] = 1  # Default: use first part
     char_count: Optional[int] = None  # Default: use all characters
     
     def __repr__(self):
@@ -88,10 +89,16 @@ class HomeDirectoryPathGenerator:
             raise PlaceholderError("Template cannot be empty")
         
         # Set defaults
+        # A bare "{first_name}" / "{last_name}" is documented as the *full*
+        # name.  The defaults used to be "first part" / "last part", which
+        # silently dropped half of a compound name such as
+        # "Novakova Svobodova"; part_index=None keeps the name whole.  A caller
+        # that wants a single part still says so with its own spec, and a
+        # template that spells the part out (e.g. "{last_name:-1}") still wins.
         if default_first_spec is None:
-            default_first_spec = NamePartSpec(part_index=1, char_count=None)
+            default_first_spec = NamePartSpec(part_index=None, char_count=None)
         if default_last_spec is None:
-            default_last_spec = NamePartSpec(part_index=-1, char_count=None)
+            default_last_spec = NamePartSpec(part_index=None, char_count=None)
         
         result = template
         
@@ -211,7 +218,10 @@ class HomeDirectoryPathGenerator:
             raise PlaceholderError("Name has no parts")
         
         # Select part
-        if spec.part_index == 0:
+        if spec.part_index is None:
+            # Whole name - only its whitespace is normalised
+            selected = ' '.join(parts)
+        elif spec.part_index == 0:
             # Use all parts (joined)
             selected = ''.join(parts)
         elif spec.part_index == -1:

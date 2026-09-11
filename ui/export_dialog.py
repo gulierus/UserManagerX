@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
 )
 
+from utils.encryption import get_available_methods
+
 
 class ExportDialog(QDialog):
     """
@@ -88,6 +90,25 @@ class ExportDialog(QDialog):
         if not file_path:
             QMessageBox.warning(self, "Missing File", "Please select a destination file.")
             return
+
+        # The chosen backend has to exist *before* the password is collected and
+        # the export starts: picking GPG on a machine without GPG used to be
+        # accepted here and only blew up inside the encryption layer, after the
+        # user had entered the password twice.  ImportDialog already checks this.
+        method = self._method_combo.currentData()
+        try:
+            available = get_available_methods()
+        except Exception:
+            available = {}
+        if not available.get(method, False):
+            QMessageBox.warning(
+                self, "Method Not Available",
+                f"The selected encryption method ({method}) is not available "
+                f"on this computer.\n\nChoose another method or install the "
+                f"required component."
+            )
+            return
+
         password = self._pass_input.text()
         if not password:
             QMessageBox.warning(self, "Missing Password", "Please enter a password.")
@@ -99,7 +120,7 @@ class ExportDialog(QDialog):
             return
         self._file_path = file_path
         self._password = password
-        self._method = self._method_combo.currentData()
+        self._method = method
         self.accept()
 
     def get_values(self) -> Tuple[str, str, str]:

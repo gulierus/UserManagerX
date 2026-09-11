@@ -7,6 +7,7 @@ VERSION 3 - Dynamic font selection using FontManager and QFontDatabase
 import logging
 from typing import List, Dict, Any
 from datetime import datetime
+from importlib.util import find_spec
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox, QPushButton,
@@ -453,6 +454,16 @@ class PDFExportSettingsWidget(QWidget):
         if saved_path:
             self.file_selector.set_path(saved_path)
         
+        # Encryption - the combo lists methods that are not installed (pikepdf
+        # sits first), so move to the first usable one instead of starting on a
+        # preselection that can only fail at export time.
+        method_combo = self.encryption_widget.method_combo
+        if not self._is_encryption_method_usable(method_combo.currentData()):
+            for index in range(method_combo.count()):
+                if self._is_encryption_method_usable(method_combo.itemData(index)):
+                    method_combo.setCurrentIndex(index)
+                    break
+        
         # Margins (2 cm default)
         margins = self.saved_settings.get('margins', {})
         self.margin_top_spin.setValue(margins.get('top', 2.0))
@@ -525,9 +536,29 @@ class PDFExportSettingsWidget(QWidget):
             f"background-color: {self.header_color.name()}; border: 1px solid #555;"
         )
         
-        # Initialize column widths to auto
+        # Column selection - the checkboxes were built from default_columns in
+        # _create_columns_tab, so a saved selection has to be re-applied here;
+        # without this the user's unticked columns came back ticked.
+        saved_columns = self.saved_settings.get('selected_columns')
+        if isinstance(saved_columns, list):
+            known = [col for col in saved_columns if col in self.column_checkboxes]
+            if known:
+                self.selected_columns = known
+                for col, checkbox in self.column_checkboxes.items():
+                    checkbox.setChecked(col in known)
+        
+        # Column widths - auto by default, but a saved width is restored; the
+        # widths were written out on save and then thrown away on restore.
+        saved_widths = self.saved_settings.get('column_widths') or {}
         for col in self.all_columns:
-            self.column_widths[col] = 'auto'
+            width = saved_widths.get(col, 'auto')
+            if width != 'auto':
+                try:
+                    width = float(width)
+                except (TypeError, ValueError):
+                    # Unusable value from an older/foreign settings file
+                    width = 'auto'
+            self.column_widths[col] = width
         
     def _select_all_columns(self):
         """Select all columns"""
@@ -574,6 +605,16 @@ class PDFExportSettingsWidget(QWidget):
                 selected.append(col)
         return selected
         
+    def _is_encryption_method_usable(self, method) -> bool:
+        """Whether an entry of the encryption combo can really run here"""
+        if not method or method.endswith('-unavailable'):
+            return False
+        if method == 'pikepdf':
+            # pikepdf is listed even when it is not installed, so its
+            # availability has to be checked separately
+            return find_spec('pikepdf') is not None
+        return True
+        
     def validate_preview_settings(self) -> tuple:
         """Validate settings for preview (no encryption needed)"""
         selected_columns = self._get_selected_columns()
@@ -599,6 +640,15 @@ class PDFExportSettingsWidget(QWidget):
         is_valid, error = self.encryption_widget.validate()
         if not is_valid:
             return (False, error)
+        
+        # The pikepdf entry is offered unconditionally by the encryption
+        # selector, so validation used to green-light an export that later died
+        # in the export task with "pikepdf library is not installed".  Check the
+        # library here, while the user can still pick another method.
+        method = self.encryption_widget.method_combo.currentData()
+        if not self._is_encryption_method_usable(method):
+            return (False, f"Encryption method '{method}' is not available "
+                           "on this machine")
         
         return (True, "")
         

@@ -458,8 +458,6 @@ class TestLoadTableFromSource:
         assert loaded.table_data == []
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: empty load leaves the previous rows on screen",
-                       strict=False)
     def test_selecting_only_an_empty_class_clears_the_displayed_table(self, loaded,
                                                                       dialogs):
         """After an empty load the table must not keep showing the old students."""
@@ -993,6 +991,15 @@ class TestPDFGeneratorOutput:
         assert_is_pdf(data)
         assert len(data) > 1000
 
+    def test_angle_brackets_in_the_title_do_not_break_the_export(self, qapp):
+        """The title is free text too - '<' must not abort the generation."""
+        data = PDFGenerator(
+            [{'First Name': 'Jan', 'Last Name': 'Novak'}],
+            settings(include_title=True, title_text='Hesla 6.A a<b'),
+        ).generate_to_buffer(BytesIO())
+
+        assert_is_pdf(data)
+
     @pytest.mark.slow
     def test_many_rows_are_paginated_with_a_repeated_header(self, qapp):
         """A whole school year does not fit on one page."""
@@ -1046,8 +1053,6 @@ class TestPDFGeneratorOutput:
         assert bytes(buffer.data()) == data
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: generate_to_file truncates the target before "
-                              "the PDF exists", strict=False)
     def test_a_failed_generation_does_not_destroy_an_existing_file(self, qapp,
                                                                    tmp_path):
         """An export that cannot be rendered must leave the old file alone."""
@@ -1132,8 +1137,6 @@ class TestPDFGeneratorCellPreparation:
         assert cell.getPlainText() == 'text'
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: cell text is parsed as markup, '<...>' is lost",
-                       strict=False)
     def test_angle_brackets_in_a_value_are_kept_verbatim(self, qapp):
         """A password like ``P@ss<word>X`` must reach the PDF unchanged."""
         generator = PDFGenerator([{'Password': 'P@ss<word>X'}],
@@ -1144,8 +1147,6 @@ class TestPDFGeneratorCellPreparation:
         assert cell.getPlainText() == 'P@ss<word>X'
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: unescaped '<' makes the whole export raise",
-                       strict=False)
     def test_a_lone_angle_bracket_does_not_break_the_export(self, qapp):
         """``a<b`` in any cell currently aborts the entire PDF generation."""
         generator = PDFGenerator([{'Password': 'a<b'}],
@@ -1504,8 +1505,6 @@ class TestSettingsWidgetValidation:
         assert "not available" in error
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: pikepdf passes validation although it is missing",
-                       strict=False)
     def test_pikepdf_is_refused_when_the_library_is_missing(self, settings_widget,
                                                             tmp_path):
         """Validation must not green-light an export that cannot run."""
@@ -1613,16 +1612,12 @@ class TestSettingsRoundTrip:
         assert produced['output_path'].endswith(".pdf")
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: saved column selection is ignored on restore",
-                       strict=False)
     def test_the_saved_column_selection_is_restored(self, qapp):
         """Columns the user unticked must stay unticked next time."""
         widget = self.widget_with({'selected_columns': ['C']})
         assert widget.get_settings_without_password()['selected_columns'] == ['C']
 
     @pytest.mark.bug
-    @pytest.mark.xfail(reason="BUG: saved column widths are reset to auto",
-                       strict=False)
     def test_the_saved_column_widths_are_restored(self, qapp):
         """Configured widths are saved, so they must also be read back."""
         widget = self.widget_with({'column_widths': {'A': 3.0, 'B': 'auto',

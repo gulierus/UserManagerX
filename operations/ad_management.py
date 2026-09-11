@@ -560,6 +560,14 @@ class ADManagementWidget(QWidget):
                 widget = self.person_table.cellWidget(row, column)
                 if widget is not None:
                     self.person_table.removeCellWidget(row, column)
+                    # removeCellWidget() (and deleteLater()) only SCHEDULE the
+                    # destruction: until the event loop gets around to it the
+                    # button is still a child of the viewport, still painted and
+                    # still holding a reference to its Person.  A burst of
+                    # repaints therefore piled the old buttons up.  Detaching the
+                    # widget from the table right away is what actually drops it;
+                    # deleteLater() then frees it when it is safe to do so.
+                    widget.setParent(None)
                     widget.deleteLater()
 
         self.person_table.clear()
@@ -720,9 +728,13 @@ class ADManagementWidget(QWidget):
             QMessageBox.warning(self, "Read-Only", "This source is read-only")
             return
         
+        # Identity, not equality: Person compares by value, so two students
+        # with the same name, class and user name are "==".  Filtering with
+        # "!=" dropped the twin's user name from the taken set and the editor
+        # then happily handed out a duplicate login.
         existing_usernames = {
             p.ad_username for p in self.current_source.get_all_persons()
-            if p.ad_username and p != person
+            if p.ad_username and p is not person
         }
         
         dialog = PropertyEditorDialog(person, existing_usernames,
@@ -873,7 +885,8 @@ class ADManagementWidget(QWidget):
         class_name = person.class_name or "(no class)"
         return f"{name} [{class_name}]"
 
-    def _generate_credentials_for(self, person, existing_usernames: set) -> Optional[str]:
+    def _generate_credentials_for(self, person, existing_usernames: set,
+                                  only_missing: bool = False) -> Optional[str]:
         """
         Generate user name, password and display name for a single person.
 
@@ -886,6 +899,12 @@ class ADManagementWidget(QWidget):
         Args:
             person: The person to process.
             existing_usernames: User names already taken; extended in place.
+            only_missing: Fill in the empty fields only and keep every value the
+                person already has.  "Generate missing credentials" used to run
+                the full generator, which handed a student who merely lacked a
+                password a brand new login (and, because their old one is in
+                *existing_usernames*, a numbered one at that) - their AD account
+                and every path derived from it were orphaned by it.
 
         Returns:
             ``None`` on success, otherwise the reason the person was skipped.
@@ -893,7 +912,13 @@ class ADManagementWidget(QWidget):
         first_name = (person.first_name or "").strip()
         last_name = (person.last_name or "").strip()
 
-        if not first_name or not last_name:
+        needs_username = not (only_missing and person.ad_username)
+        needs_password = not (only_missing and person.ad_password)
+        needs_display_name = not (only_missing and person.ad_display_name)
+
+        # The name is only a precondition for what is actually derived from it;
+        # a password can be generated for a record with a broken name as well.
+        if (needs_username or needs_display_name) and (not first_name or not last_name):
             missing = []
             if not first_name:
                 missing.append("first name")
@@ -901,33 +926,46 @@ class ADManagementWidget(QWidget):
                 missing.append("last name")
             return f"missing {' and '.join(missing)}"
 
-        try:
-            username = generate_username(first_name, last_name, existing_usernames)
-        except (ValueError, IndexError, RuntimeError) as exc:
-            return f"user name could not be generated ({exc})"
-
-        try:
-            password = generate_password()
-        except ValueError as exc:
-            # A broken password policy affects every person - report it as is
-            return f"password could not be generated ({exc})"
-
-        person.ad_username = username
-        existing_usernames.add(username)
-        person.ad_password = password
-
-        class_name = (person.class_name or "").strip()
-        if class_name:
+        username = None
+        if needs_username:
             try:
-                person.ad_display_name = generate_display_name(
-                    first_name, last_name, class_name
-                )
-            except ValueError as exc:                # pragma: no cover - defensive
-                logger.warning("Display name not generated for %s: %s",
-                               self._describe_person(person), exc)
-        else:
-            # Without a class the "First Last (Class)" form is impossible
-            person.ad_display_name = f"{first_name} {last_name}"
+                username = generate_username(first_name, last_name, existing_usernames)
+            except (ValueError, IndexError, RuntimeError) as exc:
+                return f"user name could not be generated ({exc})"
+
+        password = None
+        if needs_password:
+            try:
+                password = generate_password()
+            except ValueError as exc:
+                # A broken password policy affects every person - report it as is
+                return f"password could not be generated ({exc})"
+
+        if needs_username:
+            person.ad_username = username
+            existing_usernames.add(username)
+        elif person.ad_username:
+            # Kept, not generated - but it is still taken, so it has to stay in
+            # the set the next person's name is generated against.  (The only
+            # caller that uses only_missing seeds the set up front; this keeps
+            # the documented "extended in place" contract true on its own.)
+            existing_usernames.add(person.ad_username)
+        if needs_password:
+            person.ad_password = password
+
+        if needs_display_name:
+            class_name = (person.class_name or "").strip()
+            if class_name:
+                try:
+                    person.ad_display_name = generate_display_name(
+                        first_name, last_name, class_name
+                    )
+                except ValueError as exc:            # pragma: no cover - defensive
+                    logger.warning("Display name not generated for %s: %s",
+                                   self._describe_person(person), exc)
+            else:
+                # Without a class the "First Last (Class)" form is impossible
+                person.ad_display_name = f"{first_name} {last_name}"
 
         return None
 
@@ -1005,7 +1043,9 @@ class ADManagementWidget(QWidget):
             if person.ad_username and person.ad_password:
                 continue
 
-            reason = self._generate_credentials_for(person, existing_usernames)
+            # Fill in the gaps only - an existing login must survive
+            reason = self._generate_credentials_for(person, existing_usernames,
+                                                    only_missing=True)
             if reason is None:
                 generated += 1
             else:

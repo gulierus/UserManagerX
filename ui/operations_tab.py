@@ -28,7 +28,11 @@ class OperationsTab(QWidget):
         # Connect to source manager signals for automatic updates
         self.source_manager.source_added.connect(self.on_sources_changed)
         self.source_manager.source_removed.connect(self.on_sources_changed)
-        
+        # Editing a source on the comparison tab only emits source_modified;
+        # without this connection the operation widgets kept showing the class
+        # list and the statistics of the source as it looked when it was picked.
+        self.source_manager.source_modified.connect(self.on_source_modified)
+
         self.init_ui()
         
     def init_ui(self):
@@ -100,9 +104,15 @@ class OperationsTab(QWidget):
         self.operation_stack.addWidget(self.json_widget)
         
         content_layout.addWidget(self.operation_stack, stretch=3)
-        
+
         layout.addLayout(content_layout, stretch=1)
-        
+
+        # The stack shows page 0 from the start, but the list had no current
+        # row, so the visible operation was not the highlighted one.  Selecting
+        # row 0 now (the stack exists, so on_operation_changed can run) makes
+        # the two agree.
+        self.operation_list.setCurrentRow(0)
+
         # Initial population
         self.populate_sources()
         
@@ -115,9 +125,26 @@ class OperationsTab(QWidget):
         index = self.source_combo.findText(current_selection)
         if index >= 0:
             self.source_combo.setCurrentIndex(index)
-        
+        else:
+            # The selected source is gone.  populate_sources() rebuilds the
+            # combo with its signals blocked, so the combo silently fell back
+            # to "(Select Source)" while current_source and the three operation
+            # widgets still held - and happily operated on - the deleted
+            # source.  Run the selection handler by hand to disarm them.
+            self.on_source_changed(self.source_combo.currentText())
+
         logger.debug("Source list automatically refreshed")
-    
+
+    def on_source_modified(self, source_name):
+        """Re-read the selected source after it was edited elsewhere."""
+        if self.current_source and self.current_source.name == source_name:
+            # Push the same source through again: every operation widget
+            # rebuilds its view from it in set_source().
+            self.ad_widget.set_source(self.current_source)
+            self.pdf_widget.set_source(self.current_source)
+            self.json_widget.set_source(self.current_source)
+            logger.debug(f"Operation widgets refreshed after edit of: {source_name}")
+
     def populate_sources(self):
         """Populate source combo box"""
         self.source_combo.blockSignals(True)

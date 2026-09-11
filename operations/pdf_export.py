@@ -304,6 +304,11 @@ class PDFExportWidget(QWidget):
                     self.table_data.append(row_data)
         
         if not self.table_data:
+            # The table has to be redrawn even when the load found nothing -
+            # otherwise the rows of the PREVIOUS load stay on screen while
+            # self.table_data is already empty, so what the user sees no longer
+            # matches what would be exported.
+            self._populate_table()
             QMessageBox.information(self, "No Data", "Selected classes contain no persons")
             return
         

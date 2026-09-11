@@ -740,8 +740,6 @@ def test_append_colored_line_keeps_the_messages_in_arrival_order(tab):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: real-time view is never trimmed, lineCount() stays 1",
-                   strict=False)
 def test_append_colored_line_trims_the_view_to_the_line_cap(tab, monkeypatch):
     """The real-time view must never hold more than the configured line cap."""
     monkeypatch.setattr(lvt, "MAX_REAL_TIME_LOG_LINES", 5)
@@ -756,9 +754,6 @@ def test_append_colored_line_trims_the_view_to_the_line_cap(tab, monkeypatch):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: every message lands in one paragraph, so the view "
-                          "cannot be trimmed and each append re-lays it out",
-                   strict=False)
 def test_append_colored_line_starts_a_new_paragraph_per_message(tab):
     """
     Each message must be its own block in the document.
@@ -819,7 +814,7 @@ def test_add_real_time_log_stores_but_hides_a_message_the_filter_rejects(tab):
 
     assert tab.real_time_logs == [entry("10:00:00 - app - INFO - hidden", logging.INFO)]
     assert shown_lines(tab.real_time_text) == []
-    assert tab.rt_stats_label.text() == "Lines: 0"      # left over from the filter
+    assert tab.rt_stats_label.text() == "Lines: 0 / 1"  # hidden, but stored and counted
 
 
 @pytest.mark.gui
@@ -836,8 +831,6 @@ def test_add_real_time_log_honours_the_text_filter_with_diacritics(tab):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the stats counter is not updated for hidden messages",
-                   strict=False)
 def test_add_real_time_log_keeps_the_stored_counter_up_to_date(tab):
     """The ``visible / stored`` counter must follow messages the filter hides too."""
     tab.add_real_time_log("INFO - alpha", logging.INFO)
@@ -936,8 +929,6 @@ def test_update_real_time_filter_does_nothing_without_stored_messages(tab, no_st
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: the early return leaves the UI in the filtering state",
-                   strict=False)
 def test_update_real_time_filter_re_enables_the_ui_when_there_is_nothing_to_do(tab):
     """
     Bailing out early must still release the UI.
@@ -1055,8 +1046,6 @@ def test_load_log_file_refuses_an_entry_without_a_path(tab, dialogs):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: a log entry without 'size' raises KeyError in the slot",
-                   strict=False)
 def test_load_log_file_refuses_an_entry_without_a_size(tab, dialogs, tmp_path):
     """Item data is validated, so a truncated entry must warn, not crash."""
     path = tmp_path / "app.log"
@@ -1350,8 +1339,6 @@ def test_hist_filter_progress_replaces_a_finished_counter(tab):
 
 @pytest.mark.gui
 @pytest.mark.bug
-@pytest.mark.xfail(reason="BUG: consecutive progress updates append instead of replace",
-                   strict=False)
 def test_hist_filter_progress_does_not_pile_up_counters(tab):
     """Every progress update must replace the previous one, not extend it."""
     tab.hist_stats_label.setText("File: app.log | Lines: 12")
