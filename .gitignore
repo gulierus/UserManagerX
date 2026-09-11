@@ -1,0 +1,50 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Testing ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Application runtime output ----
+# Logs are generated at run time and may contain student data.
+logs/
+*.log
+*.log.[0-9]
+
+# Local application configuration written at run time.
+settings.json
+logging_config.json
+
+# ---- Exported / encrypted data (may contain personal data) ----
+*.usrx
+*.aes
+*.gpg
+*.enc
+export_*.pdf
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
