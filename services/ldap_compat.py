@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 try:
     from ldap3 import (
-        MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, NTLM, SUBTREE, BASE, ALL,
+        MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, NTLM, SUBTREE, BASE, LEVEL,
+        ALL,
     )
     LDAP3_AVAILABLE = True
     IMPORT_ERROR = None
@@ -37,6 +38,7 @@ except ImportError as exc:                           # pragma: no cover - env de
     NTLM = 'NTLM'
     SUBTREE = 'SUBTREE'
     BASE = 'BASE'
+    LEVEL = 'LEVEL'
     ALL = 'ALL'
     LDAP3_AVAILABLE = False
     IMPORT_ERROR = exc

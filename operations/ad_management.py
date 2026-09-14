@@ -6,6 +6,7 @@ Part 1 of 2 - Main widget and helpers
 """
 
 import logging
+import re
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -32,6 +33,7 @@ from ui.password_policy_dialog import PasswordPolicyDialog
 from ui.username_policy_dialog import UsernamePolicyDialog
 from ui.home_template_dialog import HomeDirectoryTemplateDialog
 from ui.ad_analysis_dialog import ADAnalysisDialog
+from utils.ad_search_scope import OU_PLACEHOLDERS, SearchScope, SearchScopeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ class ADDiscoveryThread(QThread):
     progress = pyqtSignal(str)
     
     def __init__(self, source, server, base_dn, username, password,
-                 connection_options=None):
+                 connection_options=None, scope_config=None):
         super().__init__()
         self.source = source
         self.server = server
@@ -59,6 +61,8 @@ class ADDiscoveryThread(QThread):
         self.password = password
         #: TLS settings from the connection panel, applied to every client
         self.connection_options = dict(connection_options or {})
+        #: Where to look for a person (see utils.ad_search_scope)
+        self.scope_config = scope_config
         self._is_running = True
         
     def run(self):
@@ -80,7 +84,7 @@ class ADDiscoveryThread(QThread):
                 
                 self.progress.emit("Discovering persons in AD...")
                 
-                discovery_service = ADDiscoveryService(client)
+                discovery_service = ADDiscoveryService(client, self.scope_config)
                 persons = self.source.get_all_persons()
                 
                 if not persons:
@@ -468,6 +472,47 @@ class ADManagementWidget(QWidget):
         self.ad_security_hint.setStyleSheet("color: #888; font-size: 10px;")
         conn_layout.addWidget(self.ad_security_hint)
 
+        # --- where to search (point 07a) -----------------------------------
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("Search in:"))
+        self.ad_scope_combo = QComboBox()
+        for scope in SearchScope:
+            self.ad_scope_combo.addItem(scope.label, scope)
+        self.ad_scope_combo.setToolTip(
+            "Where 'Discover in AD' and the synchronisation look for a person.\n"
+            "The default walks the whole subtree below the Base DN."
+        )
+        self.ad_scope_combo.currentIndexChanged.connect(self._on_search_scope_changed)
+        scope_row.addWidget(self.ad_scope_combo, stretch=1)
+        conn_layout.addLayout(scope_row)
+
+        ou_row = QHBoxLayout()
+        ou_row.addWidget(QLabel("Organisational units:"))
+        self.ad_ou_input = QLineEdit()
+        self.ad_ou_input.setEnabled(False)
+        self.ad_ou_input.setPlaceholderText(
+            "Trida-{class_name}, Rocnik-{grade}, {enrollment_year}"
+        )
+        self.ad_ou_input.setToolTip(
+            "One or more OU names, separated by a comma or a semicolon.\n"
+            "Each is searched directly inside the Base DN.\n"
+            "Placeholders are resolved per person, so one entry can cover "
+            "every class."
+        )
+        ou_row.addWidget(self.ad_ou_input, stretch=1)
+        conn_layout.addLayout(ou_row)
+
+        self.ad_ou_hint = QLabel(
+            "Placeholders: " + " · ".join(
+                f"<code>{{{name}}}</code> {description}"
+                for name, description in OU_PLACEHOLDERS.items()
+            )
+        )
+        self.ad_ou_hint.setWordWrap(True)
+        self.ad_ou_hint.setStyleSheet("color: #888; font-size: 9px;")
+        self.ad_ou_hint.setVisible(False)
+        conn_layout.addWidget(self.ad_ou_hint)
+
         layout.addWidget(conn_group)
         
         # Operations Panel
@@ -593,6 +638,24 @@ class ADManagementWidget(QWidget):
         
         layout.addWidget(self.person_table)
         
+    def _on_search_scope_changed(self, _index: int) -> None:
+        """Only the "named OUs" scope needs the OU list."""
+        named = self.ad_scope_combo.currentData() is SearchScope.NAMED_OUS
+        self.ad_ou_input.setEnabled(named)
+        self.ad_ou_hint.setVisible(named)
+
+    def get_search_scope(self) -> SearchScopeConfig:
+        """
+        Build the search scope from the connection panel.
+
+        Returns:
+            The configured :class:`~utils.ad_search_scope.SearchScopeConfig`.
+        """
+        scope = self.ad_scope_combo.currentData() or SearchScope.SUBTREE
+        raw = self.ad_ou_input.text()
+        templates = [part.strip() for part in re.split(r'[;,]', raw) if part.strip()]
+        return SearchScopeConfig(scope=scope, ou_templates=templates)
+
     def get_connection_options(self) -> dict:
         """
         Return the keyword arguments every ADClient in this widget is built with.
@@ -1288,7 +1351,7 @@ class ADManagementWidget(QWidget):
         # Start discovery thread
         self.discovery_thread = ADDiscoveryThread(
             self.current_source, server, base_dn, username, password,
-            self.get_connection_options()
+            self.get_connection_options(), self.get_search_scope()
         )
         self.discovery_thread.discovery_finished.connect(
             lambda s, r, m: self.on_discovery_finished(s, r, m, progress)
@@ -1380,7 +1443,7 @@ class ADManagementWidget(QWidget):
         
         self.discovery_thread = ADDiscoveryThread(
             self.current_source, server, base_dn, username, password,
-            self.get_connection_options()
+            self.get_connection_options(), self.get_search_scope()
         )
         self.discovery_thread.discovery_finished.connect(
             lambda s, r, m: self.on_discovery_before_sync_finished(s, r, m, progress, 

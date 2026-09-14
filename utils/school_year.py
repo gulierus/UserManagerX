@@ -323,7 +323,18 @@ def apply_enrollment_changes(source, changes: List[EnrollmentChange]) -> int:
     wanted = {change.class_name: change.new_year for change in changes}
     updated = 0
     for cls in getattr(source, "classes", []):
-        if cls.name in wanted:
-            cls.enrollment_year = wanted[cls.name]
-            updated += 1
+        if cls.name not in wanted:
+            continue
+        cls.enrollment_year = wanted[cls.name]
+        updated += 1
+
+        # Also stamp it on the students. The enrollment year belongs to the
+        # class, but several consumers only ever see a Person - the AD search
+        # scope resolves {enrollment_year} per person, for instance - and a
+        # Person has no way back to its Class.
+        for person in getattr(cls, "persons", []):
+            try:
+                person.metadata["enrollment_year"] = cls.enrollment_year
+            except Exception:                        # pragma: no cover - defensive
+                logger.debug("Could not stamp the enrollment year on %r", person)
     return updated

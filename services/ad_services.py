@@ -216,9 +216,53 @@ class SyncResult:
 class ADDiscoveryService:
     """Service for discovering persons in Active Directory"""
     
-    def __init__(self, ad_client):
+    def __init__(self, ad_client, scope_config=None):
+        """
+        Args:
+            ad_client: The connected :class:`~services.ad_client.ADClient`.
+            scope_config: Optional :class:`~utils.ad_search_scope.SearchScopeConfig`
+                restricting where persons are looked for. ``None`` searches the
+                whole subtree below the Base DN, which is the historical
+                behaviour.
+        """
         self.ad_client = ad_client
-        
+        self.scope_config = scope_config
+
+    def _search_bases(self, person: Person, base_dn: str) -> List[str]:
+        """Return the DNs *person* should be searched under."""
+        if self.scope_config is None:
+            return [base_dn]
+        from utils.ad_search_scope import build_search_bases
+        return build_search_bases(self.scope_config, base_dn, person)
+
+    def _search(self, person: Person, base_dn: str, search_filter: str):
+        """
+        Run one filter across every configured search base.
+
+        Args:
+            person: The person being discovered (the bases can depend on them).
+            base_dn: The configured Base DN.
+            search_filter: The LDAP filter.
+
+        Returns:
+            The combined matches, de-duplicated by DN.
+        """
+        seen = set()
+        matches = []
+        for search_base in self._search_bases(person, base_dn):
+            try:
+                found = self.ad_client.search_users(search_base, search_filter)
+            except Exception as exc:
+                # A named OU that does not exist is normal when one template
+                # covers classes that are not all present in the directory.
+                logger.debug("Search in %r failed: %s", search_base, exc)
+                continue
+            for entry in found or []:
+                if entry.dn not in seen:
+                    seen.add(entry.dn)
+                    matches.append(entry)
+        return matches
+
     def discover_persons(self, persons: List[Person], base_dn: str) -> List[DiscoveryResult]:
         """
         Discover which persons exist in AD
@@ -275,9 +319,8 @@ class ADDiscoveryService:
         
         # Strategy 2: Search by username
         if person.ad_username:
-            matches = self.ad_client.search_users(
-                base_dn,
-                f"(sAMAccountName={person.ad_username})"
+            matches = self._search(
+                person, base_dn, f"(sAMAccountName={person.ad_username})"
             )
             if len(matches) == 1:
                 entry = matches[0]
@@ -298,9 +341,8 @@ class ADDiscoveryService:
         
         # Strategy 3: Search by email
         if person.ad_email:
-            matches = self.ad_client.search_users(
-                base_dn,
-                f"(mail={person.ad_email})"
+            matches = self._search(
+                person, base_dn, f"(mail={person.ad_email})"
             )
             if len(matches) == 1:
                 entry = matches[0]
@@ -314,7 +356,7 @@ class ADDiscoveryService:
         
         # Strategy 4: Search by name
         search_filter = f"(&(givenName={person.first_name})(sn={person.last_name}))"
-        matches = self.ad_client.search_users(base_dn, search_filter)
+        matches = self._search(person, base_dn, search_filter)
         
         if len(matches) == 1:
             entry = matches[0]
