@@ -205,19 +205,28 @@ class BulkEditDialog(QDialog):
         # === HOME DIRECTORY ===
         home_group = QGroupBox("Home Directory")
         home_layout = QVBoxLayout(home_group)
-        
-        self.change_home = QCheckBox("Set home directory from template")
+
+        self.change_home = QCheckBox("Set home directory")
         home_layout.addWidget(self.change_home)
-        
-        # Template selection
-        template_layout = QHBoxLayout()
-        template_layout.setContentsMargins(20, 0, 0, 0)
-        template_layout.addWidget(QLabel("Template:"))
-        
+
+        # --- how the path is produced --------------------------------------
+        # Either from a saved template, or typed in directly.  Both go through
+        # the same placeholder engine, so a directly typed path supports
+        # {first_name}, {last_name:1:3}, {username}, {class_name} exactly like
+        # a stored template does.
+        self.home_mode_group = QButtonGroup(self)
+
+        template_mode_row = QHBoxLayout()
+        template_mode_row.setContentsMargins(20, 0, 0, 0)
+        self.home_template_radio = QRadioButton("From template:")
+        self.home_template_radio.setChecked(True)
+        self.home_mode_group.addButton(self.home_template_radio, 1)
+        template_mode_row.addWidget(self.home_template_radio)
+
         self.home_template_combo = QComboBox()
         self.home_template_combo.setEnabled(False)
         self.home_template_combo.addItem("-- Select Template --", None)
-        
+
         # Load home directory templates with tooltips showing path
         template_manager = HomeDirectoryTemplateManager()
         for name, template_path in template_manager.get_all_templates().items():
@@ -231,19 +240,46 @@ class BulkEditDialog(QDialog):
 
         self.home_template_combo.currentIndexChanged.connect(self._update_home_template_preview)
         self.home_template_combo.setToolTip("Select a template. Hover over items to see the path.")
+        template_mode_row.addWidget(self.home_template_combo, 1)
+        home_layout.addLayout(template_mode_row)
 
-        template_layout.addWidget(self.home_template_combo, 1)
+        direct_mode_row = QHBoxLayout()
+        direct_mode_row.setContentsMargins(20, 0, 0, 0)
+        self.home_direct_radio = QRadioButton("Direct path:")
+        self.home_mode_group.addButton(self.home_direct_radio, 2)
+        direct_mode_row.addWidget(self.home_direct_radio)
 
-        # Template preview label
+        self.home_direct_input = QLineEdit()
+        self.home_direct_input.setEnabled(False)
+        self.home_direct_input.setPlaceholderText(
+            r"\\server\share\{username}   or   H:\{class_name}\{username}"
+        )
+        self.home_direct_input.setToolTip(
+            "Type the path directly. Placeholders are supported, so every "
+            "person still gets their own path."
+        )
+        self.home_direct_input.textChanged.connect(self._update_home_template_preview)
+        direct_mode_row.addWidget(self.home_direct_input, 1)
+        home_layout.addLayout(direct_mode_row)
+
+        # Available placeholders, so the user does not have to guess
+        placeholder_help = QLabel(
+            "<i>Placeholders: {first_name}, {last_name}, {username}, "
+            "{class_name} &nbsp;·&nbsp; part/length selection: "
+            "{last_name:1:3} = first 3 letters of the first surname</i>"
+        )
+        placeholder_help.setWordWrap(True)
+        placeholder_help.setStyleSheet("color: #888; font-size: 9px; margin-left: 20px;")
+        home_layout.addWidget(placeholder_help)
+
+        # Preview, shared by both modes
         self.home_template_preview = QLabel()
         self.home_template_preview.setStyleSheet(
             "color: #aaa; font-size: 9px; font-style: italic; padding: 2px 0;"
         )
         self.home_template_preview.setWordWrap(True)
-        home_layout.addLayout(template_layout)
-
         home_layout.addWidget(self.home_template_preview)
-        
+
         # Drive letter
         drive_layout = QHBoxLayout()
         drive_layout.setContentsMargins(20, 0, 0, 0)
@@ -252,14 +288,23 @@ class BulkEditDialog(QDialog):
         self.home_drive_input.setEnabled(False)
         self.home_drive_input.setPlaceholderText("H:")
         self.home_drive_input.setMaximumWidth(60)
+        self.home_drive_input.setToolTip(
+            "A single drive letter followed by a colon, e.g. H:\n"
+            "Windows cannot map anything else."
+        )
+        self.home_drive_input.textChanged.connect(self._validate_home_drive)
         drive_layout.addWidget(self.home_drive_input)
+
+        self.home_drive_warning = QLabel()
+        self.home_drive_warning.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+        drive_layout.addWidget(self.home_drive_warning)
         drive_layout.addStretch()
         home_layout.addLayout(drive_layout)
-        
+
         # Connect enable/disable
-        self.change_home.toggled.connect(self.home_template_combo.setEnabled)
-        self.change_home.toggled.connect(self.home_drive_input.setEnabled)
-        
+        self.change_home.toggled.connect(self._update_home_controls)
+        self.home_mode_group.idToggled.connect(lambda _i, _c: self._update_home_controls())
+
         # Info
         home_info = QLabel(
             "<i>Each person will have a unique path generated based on their information</i>"
@@ -313,13 +358,69 @@ class BulkEditDialog(QDialog):
         self.template_combo.setEnabled(self.apply_template_radio.isChecked())
         self.update_summary()
     
-    def _update_home_template_preview(self, index):
-        """Update the template preview label when a template is selected"""
-        template_path = self.home_template_combo.currentData()
-        if template_path and hasattr(self, 'home_template_preview'):
-            self.home_template_preview.setText(f"Path: {template_path}")
-        elif hasattr(self, 'home_template_preview'):
+    def get_home_template(self):
+        """
+        Return the path template the user configured, or ``None``.
+
+        Both modes produce a template string: a saved template is one that was
+        stored earlier, a direct path is one the user just typed. They are
+        rendered by the same placeholder engine.
+        """
+        if self.home_direct_radio.isChecked():
+            return self.home_direct_input.text().strip() or None
+        return self.home_template_combo.currentData()
+
+    def _update_home_controls(self, *_args):
+        """Enable exactly the widgets the selected mode needs."""
+        active = self.change_home.isChecked()
+        self.home_template_radio.setEnabled(active)
+        self.home_direct_radio.setEnabled(active)
+        self.home_drive_input.setEnabled(active)
+        self.home_template_combo.setEnabled(active and self.home_template_radio.isChecked())
+        self.home_direct_input.setEnabled(active and self.home_direct_radio.isChecked())
+        self._update_home_template_preview()
+
+    def _validate_home_drive(self, *_args):
+        """
+        Warn about a drive letter Windows cannot map.
+
+        The field used to accept anything at all: typing "sfsdf" was written
+        straight onto every selected person and on to AD's homeDrive
+        attribute, where it silently does nothing.
+        """
+        text = self.home_drive_input.text().strip()
+        if not text or self.is_valid_drive_letter(text):
+            self.home_drive_warning.setText("")
+        else:
+            self.home_drive_warning.setText("⚠ use a letter and a colon, e.g. H:")
+
+    @staticmethod
+    def is_valid_drive_letter(text: str) -> bool:
+        """True for a single letter followed by a colon (``H:``)."""
+        candidate = (text or "").strip()
+        return len(candidate) == 2 and candidate[0].isalpha() and candidate[1] == ":"
+
+    def _update_home_template_preview(self, *_args):
+        """Show what the configured template produces for the first person."""
+        if not hasattr(self, 'home_template_preview'):
+            return
+
+        template = self.get_home_template()
+        if not template:
             self.home_template_preview.setText("")
+            return
+
+        preview = f"Path: {template}"
+        if self.selected_persons:
+            try:
+                generated = HomeDirectoryPathGenerator.generate_path(
+                    template, self.selected_persons[0]
+                )
+                preview += f"\n{self.selected_persons[0].first_name} " \
+                           f"{self.selected_persons[0].last_name} → {generated}"
+            except PlaceholderError as exc:
+                preview += f"\n⚠ {exc}"
+        self.home_template_preview.setText(preview)
 
     def select_groups_dialog(self):
         """Show dialog to select groups"""
@@ -412,13 +513,15 @@ class BulkEditDialog(QDialog):
                     changes.append(f"{action.title()} groups from template (not selected)")
         
         if self.change_home.isChecked():
-            template = self.home_template_combo.currentData()
+            template = self.get_home_template()
+            source = ("direct path" if self.home_direct_radio.isChecked()
+                      else "template")
             if template:
                 drive = self.home_drive_input.text().strip()
                 drive_text = f" (Drive: {drive})" if drive else ""
-                changes.append(f"Set home directory from template{drive_text}")
+                changes.append(f"Set home directory from {source}{drive_text}")
             else:
-                changes.append("Set home directory (template not selected)")
+                changes.append(f"Set home directory ({source} not provided)")
         
         if changes:
             summary = f"<b>Changes to apply to {len(self.selected_persons)} persons:</b><br>"
@@ -454,11 +557,40 @@ class BulkEditDialog(QDialog):
         
         # Validate home directory changes
         if self.change_home.isChecked():
-            template = self.home_template_combo.currentData()
+            template = self.get_home_template()
             if not template:
-                QMessageBox.warning(self, "No Template", 
-                                  "Please select a home directory template")
+                if self.home_direct_radio.isChecked():
+                    QMessageBox.warning(self, "No Path",
+                                        "Please enter the home directory path")
+                else:
+                    QMessageBox.warning(self, "No Template",
+                                        "Please select a home directory template")
                 return
+
+            # A path that cannot be rendered would fail for every person, so
+            # catch it here rather than once per record.
+            error = HomeDirectoryPathGenerator.validate_template(template)
+            if error:
+                QMessageBox.warning(
+                    self, "Invalid Path",
+                    "The home directory path cannot be used:\n\n"
+                    + "\n".join(f"• {problem}" for problem in error)
+                )
+                return
+
+            drive = self.home_drive_input.text().strip()
+            if drive and not self.is_valid_drive_letter(drive):
+                reply = QMessageBox.question(
+                    self, "Unusual Drive Letter",
+                    f"'{drive}' is not a drive letter.\n\n"
+                    f"Windows can only map a single letter followed by a colon "
+                    f"(for example H:). '{drive}' will be written to Active "
+                    f"Directory but will not work.\n\nUse it anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
         
         # Confirm
         reply = QMessageBox.question(
@@ -502,7 +634,7 @@ class BulkEditDialog(QDialog):
         
         # Apply home directory changes
         if self.change_home.isChecked():
-            self.changes['home_directory_template'] = self.home_template_combo.currentData()
+            self.changes['home_directory_template'] = self.get_home_template()
             self.changes['home_drive'] = self.home_drive_input.text().strip() or None
         
         # Apply changes to all persons
