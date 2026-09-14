@@ -56,12 +56,14 @@ class SourcePanel(QWidget):
         shift_requested(): "Shift Classes" was pressed.
         convert_requested(): "Convert Class Numerals" was pressed.
         analyze_requested(): "Analyze Source" was pressed.
+        enrollment_requested(): "Enrollment Years" was pressed.
     """
 
     duplicate_requested = pyqtSignal()
     shift_requested = pyqtSignal()
     convert_requested = pyqtSignal()
     analyze_requested = pyqtSignal()
+    enrollment_requested = pyqtSignal()
 
     def __init__(self, title: str, source_manager, allow_edit: bool = False,
                  accent: str = "#4CAF50"):
@@ -175,11 +177,18 @@ class SourcePanel(QWidget):
             "and fix them",
             self.analyze_requested.emit,
         )
+        self.enrollment_button = make_button(
+            "🎓 Enrollment Years",
+            "Work out, for every class, the year it started the first grade "
+            "(from the grade in the class name and the current school year)",
+            self.enrollment_requested.emit,
+        )
 
         grid.addWidget(self.duplicate_button, 0, 0)
         grid.addWidget(self.shift_button, 0, 1)
         grid.addWidget(self.convert_button, 1, 0)
         grid.addWidget(self.analyze_button, 1, 1)
+        grid.addWidget(self.enrollment_button, 2, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
 
@@ -766,11 +775,13 @@ class ComparisonTab(QWidget):
         self.left_panel.shift_requested.connect(lambda: self.shift_classes('left'))
         self.left_panel.convert_requested.connect(lambda: self.convert_class_numerals('left'))
         self.left_panel.analyze_requested.connect(lambda: self.analyze_source('left'))
+        self.left_panel.enrollment_requested.connect(lambda: self.update_enrollment_years('left'))
 
         self.right_panel.duplicate_requested.connect(lambda: self.copy_to_output('right'))
         self.right_panel.shift_requested.connect(lambda: self.shift_classes('right'))
         self.right_panel.convert_requested.connect(lambda: self.convert_class_numerals('right'))
         self.right_panel.analyze_requested.connect(lambda: self.analyze_source('right'))
+        self.right_panel.enrollment_requested.connect(lambda: self.update_enrollment_years('right'))
 
         splitter.addWidget(self.left_panel)
         splitter.addWidget(self.right_panel)
@@ -960,6 +971,49 @@ class ComparisonTab(QWidget):
 
         QMessageBox.information(self, "Success", f"Created copy: {name}")
         logger.info(f"Created source copy: {name}")
+
+    def update_enrollment_years(self, side: str) -> None:
+        """
+        Recalculate the enrollment year of every class of one input source.
+
+        The same calculation runs automatically when a source is loaded; this
+        button re-runs it on demand - after a shift, for instance, when the
+        grades have moved and the enrollment year has not.
+        """
+        source = self._panel_source(side)
+        if source is None:
+            return
+
+        if not source.classes:
+            QMessageBox.information(self, "No Classes",
+                                    f"'{source.name}' contains no classes.")
+            return
+
+        try:
+            from utils.enrollment_service import update_source_enrollment_years
+            updated, resolution = update_source_enrollment_years(
+                source, parent=self, silent=False, refresh_year=True
+            )
+        except Exception as exc:
+            logger.exception("Enrollment year calculation failed")
+            QMessageBox.critical(self, "Error",
+                                 f"Could not calculate the enrollment years:\n\n{exc}")
+            return
+
+        if not updated:
+            QMessageBox.information(
+                self, "Nothing Changed",
+                f"No enrollment year needed to be changed.\n\n"
+                f"Current year: {resolution.describe()}"
+            )
+            return
+
+        self.source_manager.notify_source_modified(source.name)
+        QMessageBox.information(
+            self, "Enrollment Years Updated",
+            f"Set the enrollment year of {updated} class(es) in '{source.name}'.\n\n"
+            f"Current year: {resolution.describe()}"
+        )
 
     def analyze_source(self, side: str) -> None:
         """Run the deep analysis on one input source."""

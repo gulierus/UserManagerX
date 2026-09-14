@@ -671,10 +671,21 @@ class Person:
 
 @dataclass
 class Class:
-    """Represents a class/grade with students"""
-    
+    """
+    Represents a class/grade with students.
+
+    Attributes:
+        name: The class designation as the source delivered it ("6.A", "IX.B").
+        persons: The students in this class.
+        enrollment_year: The calendar year in which this class started the
+            FIRST grade. Derived from the grade in :attr:`name` and the current
+            school year; ``None`` until it has been calculated.
+        metadata: Anything a source wants to carry along.
+    """
+
     name: str
     persons: List[Person] = field(default_factory=list)
+    enrollment_year: Optional[int] = None
     metadata: Dict = field(default_factory=dict)
     
     def add_person(self, person: Person):
@@ -810,10 +821,32 @@ class SourceManager(QObject):
         logger.info("SourceManager initialized")
         
     def add_source(self, source: Source):
-        """Add a new source and emit signal"""
+        """
+        Add a new source and emit signal.
+
+        The enrollment year of every class is calculated here, so it happens
+        for data from ANY source - EduPage, an encrypted file or Active
+        Directory - without each loader having to remember to do it.
+        """
         self.sources.append(source)
         logger.info(f"Added source: {source.name}")
+        self._update_enrollment_years(source)
         self.source_added.emit(source)
+
+    @staticmethod
+    def _update_enrollment_years(source: Source):
+        """
+        Fill in the enrollment year of a freshly added source.
+
+        Failures are logged and swallowed: a missing network or an odd class
+        name must never stop a source from being loaded.
+        """
+        try:
+            from utils.enrollment_service import update_source_enrollment_years
+            update_source_enrollment_years(source, silent=True)
+        except Exception:
+            logger.exception("Could not calculate the enrollment years of %r",
+                             getattr(source, "name", "?"))
         
     def remove_source(self, source: Source):
         """

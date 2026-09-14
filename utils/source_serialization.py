@@ -219,7 +219,8 @@ def source_to_dict(source: Source) -> Dict[str, Any]:
     for cls in source.classes:
         data["classes"].append({
             "name": cls.name,
-            "metadata": cls.metadata,
+            "enrollment_year": cls.enrollment_year,
+            "metadata": _plain_copy(cls.metadata),
             "persons": [person_to_dict(person) for person in cls.persons],
         })
 
@@ -280,8 +281,20 @@ def source_from_dict(data: Dict[str, Any], default_name: str = "Imported",
             logger.warning("Ignoring non-dictionary class metadata: %r", class_metadata)
             class_metadata = None
 
+        # An enrollment year written by an older version is absent, not wrong;
+        # a non-numeric one is ignored rather than aborting the whole import.
+        enrollment_year = class_data.get("enrollment_year")
+        if enrollment_year is not None:
+            try:
+                enrollment_year = int(enrollment_year)
+            except (TypeError, ValueError):
+                logger.warning("Ignoring unusable enrollment_year %r for class %r",
+                               enrollment_year, class_data["name"])
+                enrollment_year = None
+
         cls = Class(
             name=class_data["name"],
+            enrollment_year=enrollment_year,
             metadata=_plain_copy(class_metadata) or {},
         )
 
