@@ -670,96 +670,86 @@ class PersonsSyncService:
         return result
     
     def _execute_create(self, create_op: CreateOperation) -> OperationResult:
-        """Execute a create operation with password policy"""
+        """
+        Create a user in AD and apply everything that belongs to it.
+
+        Each step (account, password, groups, home directory) is INDEPENDENT:
+        a step that fails is recorded and the remaining steps still run. The
+        previous version returned as soon as the password step failed, which is
+        why users were created but never ended up in their groups - the group
+        step simply never executed.
+
+        Args:
+            create_op: The planned creation.
+
+        Returns:
+            An :class:`OperationResult` whose message names every failed step.
+        """
         person = create_op.person
-        
+        failures: List[str] = []
+
         try:
-            # Ensure OU exists first
+            # --- the organisational unit -----------------------------------
             if not self.ad_client.ou_exists(create_op.target_ou):
                 # Escaped RDNs must not be split on every comma/'=' - the OU
                 # name of "OU=Trida-6\,A,..." is "Trida-6,A", not "Trida-6\".
                 ou_name = first_rdn_value(create_op.target_ou)
                 logger.info(f"Creating OU: {create_op.target_ou}")
                 if not self.ad_client.create_ou(create_op.target_ou, ou_name):
+                    # Without the OU the account cannot be created at all, so
+                    # this one genuinely is terminal.
                     return OperationResult(
                         person=person,
                         status='FAILED',
                         message=f"Failed to create OU: {create_op.target_ou}"
                     )
-            
+
+            # --- the account ------------------------------------------------
             # Build DN - the CN is user data and is escaped for the same
             # reason as the class name in the target OU.
             cn = person.ad_display_name or person.ad_username
             dn = f"CN={escape_dn_value(cn)},{create_op.target_ou}"
-            
-            # Prepare attributes with password policy
+
             attributes = create_op.attributes.copy()
-            
-            # Add user account control flags
-            uac_flags = self._build_uac_flags(person)
-            attributes['userAccountControl'] = str(uac_flags)
-            
-            # Create user in AD
-            success = self.ad_client.create_user(dn, attributes)
-            
-            if not success:
+            attributes['userAccountControl'] = str(self._build_uac_flags(person))
+
+            if not self.ad_client.create_user(dn, attributes):
                 return OperationResult(
                     person=person,
                     status='FAILED',
                     message="Failed to create user in AD"
                 )
-            
+
             # The account exists from here on, so remember where it is *before*
             # anything else can fail.  The DN used to be recorded only at the
             # very end, so a failing password step left the person without a
             # DN and the next synchronisation created a second account.
             person.ad_dn = dn
             person.ad_status = ADStatus.EXISTS_IN_AD
-            
-            # Set password (must be done after creation)
-            if person.ad_password:
-                try:
-                    self._set_password(dn, person.ad_password, person)
-                except Exception as pwd_error:
-                    # NEVER log the password itself - the log file is readable
-                    # in the application and is often shared for support.
-                    logger.error(
-                        "User %s created but password setting failed: %s",
-                        person.ad_username, pwd_error
-                    )
-                    # User is created but password failed - still mark as partial success
-                    return OperationResult(
-                        person=person,
-                        status='SUCCESS',
-                        message=f"Created user {person.ad_username} but password setting failed"
-                    )
-            
-            # Update person with successful creation
+
+            # --- everything that can fail on its own ------------------------
+            failures.extend(self._apply_post_account_steps(person, dn))
+
+            # --- final state -------------------------------------------------
+            self._refresh_ad_state(person, dn)
+
+            if failures:
+                person.ad_status = ADStatus.UPDATE_PENDING
+                return OperationResult(
+                    person=person,
+                    status='SUCCESS',
+                    message=(f"Created user {person.ad_username}, but: "
+                             + "; ".join(failures))
+                )
+
             person.ad_status = ADStatus.SYNCED
             person.reset_dirty()
-            
-            # After creating/updating user, sync groups.  A failure here must
-            # not undo the successful creation, so it is logged and reported
-            # instead of propagating.
-            if person.group_memberships:
-                try:
-                    ADGroupService(self.ad_client).sync_user_groups(person)
-                except Exception as group_error:
-                    logger.error("Group synchronisation failed for %s: %s",
-                                 person.ad_username, group_error)
-
-            # Fetch fresh timestamp
-            entry = self.ad_client.get_user(dn)
-            if entry:
-                person.ad_version = entry.get('modifyTimestamp')
-                person.metadata['ad_current_values'] = entry.attributes
-            
             return OperationResult(
                 person=person,
                 status='SUCCESS',
                 message=f"Created user {person.ad_username}"
             )
-                
+
         except Exception as e:
             logger.exception(f"Error creating user {person.ad_username}")
             return OperationResult(
@@ -768,18 +758,96 @@ class PersonsSyncService:
                 message=str(e),
                 error=e
             )
-    
+
+    def _apply_post_account_steps(self, person: Person, dn: str) -> List[str]:
+        """
+        Run every per-user step that is independent of the others.
+
+        Password, account flags, group memberships and the home directory are
+        each attempted regardless of whether an earlier one failed, so a single
+        problem (most often the password, which Active Directory refuses over
+        an unencrypted connection) can no longer silently cancel the rest of
+        the synchronisation.
+
+        Args:
+            person: The person being synchronised.
+            dn: The distinguished name of their AD account.
+
+        Returns:
+            A list of human readable failure descriptions; empty when all
+            steps succeeded.
+        """
+        failures: List[str] = []
+
+        # --- password ------------------------------------------------------
+        if person.ad_password:
+            try:
+                self._set_password(dn, person.ad_password, person)
+            except Exception as exc:
+                # NEVER log the password itself - the log file is readable in
+                # the application and is often shared for support.
+                logger.error("Password not set for %s: %s", person.ad_username, exc)
+                failures.append(f"password not set ({exc})")
+
+        # --- group memberships ---------------------------------------------
+        if person.group_memberships:
+            try:
+                if not ADGroupService(self.ad_client).sync_user_groups(person):
+                    failures.append("group memberships were not fully applied")
+            except Exception as exc:
+                logger.error("Group synchronisation failed for %s: %s",
+                             person.ad_username, exc)
+                failures.append(f"groups not applied ({exc})")
+
+        # --- home directory --------------------------------------------------
+        if person.home_directory:
+            try:
+                if not self.ad_client.set_home_directory(
+                    dn, person.home_directory, person.home_drive
+                ):
+                    failures.append("home directory was not set")
+            except Exception as exc:
+                logger.error("Home directory not set for %s: %s",
+                             person.ad_username, exc)
+                failures.append(f"home directory not set ({exc})")
+
+        return failures
+
+    def _refresh_ad_state(self, person: Person, dn: str) -> None:
+        """Re-read the account so the conflict detector has a fresh baseline."""
+        try:
+            entry = self.ad_client.get_user(dn)
+            if entry:
+                person.ad_version = entry.get('modifyTimestamp')
+                person.metadata['ad_current_values'] = entry.attributes
+        except Exception as exc:
+            logger.warning("Could not re-read %s after the update: %s", dn, exc)
+
     def _execute_update(
         self,
         update_op: UpdateOperation,
         conflict_strategy: ConflictStrategy,
         user_choices: Optional[Dict[str, Dict[str, str]]]
     ) -> OperationResult:
-        """Execute an update operation with password policy"""
+        """
+        Update an existing AD user.
+
+        Like :meth:`_execute_create`, every step is independent: a refused
+        password no longer cancels the group and home-directory steps.
+
+        Args:
+            update_op: The planned update.
+            conflict_strategy: How to resolve a conflict.
+            user_choices: Per-person field choices for USER_PROMPT.
+
+        Returns:
+            An :class:`OperationResult` naming every failed step.
+        """
         person = update_op.person
-        
+        failures: List[str] = []
+
         try:
-            # Handle conflicts
+            # --- conflict resolution ---------------------------------------
             if update_op.has_conflict and update_op.conflict_info:
                 person_choices = user_choices.get(str(id(person)), {}) if user_choices else {}
                 resolution = self.conflict_resolver.resolve(
@@ -787,102 +855,100 @@ class PersonsSyncService:
                     conflict_strategy,
                     person_choices
                 )
-                
+
                 if resolution is None:
                     return OperationResult(
                         person=person,
                         status='SKIPPED',
                         message="Conflict not resolved"
                     )
-                
+
                 changes = resolution.merged_changes
             else:
                 changes = update_op.changes
-            
+
             if not changes:
                 return OperationResult(
                     person=person,
                     status='SKIPPED',
                     message="No changes to apply"
                 )
-            
-            # Separate password/policy changes from regular attribute changes
+
+            # --- split the changes by the mechanism that applies them -------
             ldap_ops = []
             password_changed = False
             policy_changed = False
-            
+
             for field, value in changes.items():
                 if field == 'ad_password':
                     password_changed = True
-                elif field in ['password_must_change', 'password_cannot_change', 
-                              'password_never_expires', 'account_enabled']:
+                elif field in ('password_must_change', 'password_cannot_change',
+                               'password_never_expires', 'account_enabled'):
                     policy_changed = True
                 else:
-                    # Regular LDAP attribute
                     ldap_attr = self._map_field_to_ldap(field)
                     if ldap_attr:
-                        # Ensure value is properly formatted for LDAP
                         ldap_value = [str(value)] if value is not None else []
                         ldap_ops.append((MODIFY_REPLACE, ldap_attr, ldap_value))
-            
-            # Apply regular attribute changes
+
+            # --- plain attributes -------------------------------------------
             if ldap_ops:
-                success = self.ad_client.modify_user(person.ad_dn, ldap_ops)
-                if not success:
-                    return OperationResult(
-                        person=person,
-                        status='FAILED',
-                        message="Failed to update user attributes"
-                    )
-            
-            # Apply password change
-            if password_changed:
+                try:
+                    if not self.ad_client.modify_user(person.ad_dn, ldap_ops):
+                        failures.append("attributes were not updated")
+                except Exception as exc:
+                    logger.error("Attribute update failed for %s: %s",
+                                 person.ad_username, exc)
+                    failures.append(f"attributes not updated ({exc})")
+
+            # --- password ----------------------------------------------------
+            if password_changed and person.ad_password:
                 try:
                     self._set_password(person.ad_dn, person.ad_password, person)
-                except Exception as pwd_error:
-                    logger.error(f"Password update failed: {pwd_error}")
-                    return OperationResult(
-                        person=person,
-                        status='FAILED',
-                        message=f"Failed to update password: {pwd_error}"
-                    )
-            
-            # Apply policy changes
+                except Exception as exc:
+                    logger.error("Password not updated for %s: %s",
+                                 person.ad_username, exc)
+                    failures.append(f"password not set ({exc})")
+
+            # --- account flags ------------------------------------------------
             if policy_changed:
                 try:
                     self._update_account_flags(person)
-                except Exception as policy_error:
-                    logger.error(f"Policy update failed: {policy_error}")
-                    return OperationResult(
-                        person=person,
-                        status='FAILED',
-                        message=f"Failed to update account policy: {policy_error}"
-                    )
-            
-            # After creating/updating user, sync groups
+                except Exception as exc:
+                    logger.error("Account policy not updated for %s: %s",
+                                 person.ad_username, exc)
+                    failures.append(f"account policy not updated ({exc})")
+
+            # --- groups -------------------------------------------------------
             if person.group_memberships:
                 try:
-                    ADGroupService(self.ad_client).sync_user_groups(person)
-                except Exception as group_error:
+                    if not ADGroupService(self.ad_client).sync_user_groups(person):
+                        failures.append("group memberships were not fully applied")
+                except Exception as exc:
                     logger.error("Group synchronisation failed for %s: %s",
-                                 person.ad_username, group_error)
+                                 person.ad_username, exc)
+                    failures.append(f"groups not applied ({exc})")
 
-            # Update person status
+            # --- final state -----------------------------------------------------
+            self._refresh_ad_state(person, person.ad_dn)
+
+            if failures:
+                person.ad_status = ADStatus.UPDATE_PENDING
+                return OperationResult(
+                    person=person,
+                    status='FAILED',
+                    message=(f"Updated user {person.ad_username} with problems: "
+                             + "; ".join(failures))
+                )
+
             person.ad_status = ADStatus.SYNCED
             person.reset_dirty()
-            
-            # Fetch fresh timestamp
-            entry = self.ad_client.get_user(person.ad_dn)
-            if entry:
-                person.ad_version = entry.get('modifyTimestamp')
-                person.metadata['ad_current_values'] = entry.attributes
-            
             return OperationResult(
                 person=person,
                 status='SUCCESS',
                 message=f"Updated user {person.ad_username}"
             )
-                
+
         except Exception as e:
             logger.exception(f"Error updating user {person.ad_username}")
             return OperationResult(
@@ -956,40 +1022,35 @@ class PersonsSyncService:
         return flags
     
     def _set_password(self, dn: str, password: str, person: Person):
-        """Set password with proper encoding and policy"""
-        try:
-            # Validate password is not empty
-            if not password:
-                raise ValueError("Password cannot be empty")
-            
-            # Encode password in UTF-16-LE with quotes as required by AD
-            password_value = f'"{password}"'
+        """
+        Set a user's password and apply the "must change" flag.
+
+        The encoding and the encrypted-channel requirement are handled by
+        :meth:`services.ad_client.ADClient.set_password`.
+
+        Args:
+            dn: Distinguished Name of the user.
+            password: The new password.
+            person: The person, for the password policy flags.
+
+        Raises:
+            RuntimeError: If the password could not be set.
+        """
+        if not password:
+            raise ValueError("Password cannot be empty")
+
+        self.ad_client.set_password(dn, password)
+
+        # If the user must change the password at next logon, pwdLastSet=0.
+        # A failure here must not invalidate the password that was just set.
+        if person.password_must_change:
             try:
-                password_encoded = password_value.encode('utf-16-le')
-            except UnicodeEncodeError as e:
-                raise ValueError(f"Password contains invalid characters: {e}")
-            
-            # Set password
-            success = self.ad_client.modify_user(
-                dn,
-                [(MODIFY_REPLACE, 'unicodePwd', [password_encoded])]
-            )
-            
-            if not success:
-                raise RuntimeError("Failed to set password in AD")
-            
-            # If must change password, set pwdLastSet to 0
-            if person.password_must_change:
                 self.ad_client.modify_user(
-                    dn,
-                    [(MODIFY_REPLACE, 'pwdLastSet', ['0'])]
+                    dn, [(MODIFY_REPLACE, 'pwdLastSet', ['0'])]
                 )
-            
-            logger.info(f"Set password for {dn}")
-            
-        except Exception as e:
-            logger.error(f"Failed to set password for {dn}: {e}")
-            raise
+            except Exception as exc:
+                logger.warning("Password was set for %s but the 'must change "
+                               "at next logon' flag was not: %s", dn, exc)
 
     def _categorize_result(self, sync_result: SyncResult, op_result: OperationResult):
         """Add operation result to appropriate category"""

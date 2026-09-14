@@ -99,7 +99,8 @@ class FakeADClient:
 
     def __init__(self, users=None, existing_ous=(), create_user_result=True,
                  create_ou_result=True, modify_results=None,
-                 search_results=(), timestamp="20240101000000.0Z"):
+                 search_results=(), timestamp="20240101000000.0Z",
+                 set_password_error=None, home_directory_result=True):
         self.users = dict(users or {})
         self.existing_ous = set(existing_ous)
         self.create_user_result = create_user_result
@@ -109,11 +110,19 @@ class FakeADClient:
         self.search_results = list(search_results)
         self.timestamp = timestamp
         self.get_user_error = None
+        #: raise this from set_password() to simulate a refusal
+        self.set_password_error = set_password_error
+        self.home_directory_result = home_directory_result
+        #: the channel is encrypted unless a test says otherwise
+        self.is_secure = True
+        self.tls_error = None
 
         self.calls = []
         self.modifications = []
         self.created_users = []
         self.created_ous = []
+        self.passwords_set = []
+        self.home_directories = []
 
     # -- the ADClient surface -------------------------------------------
 
@@ -154,6 +163,24 @@ class FakeADClient:
             if attribute in touched:
                 return result
         return True
+
+    def set_password(self, dn, password):
+        """Mirror of ADClient.set_password: encrypted channel, then set."""
+        self.calls.append(("set_password", dn))
+        if self.set_password_error is not None:
+            raise self.set_password_error
+        self.passwords_set.append((dn, password))
+        return True
+
+    def set_home_directory(self, dn, home_path, home_drive=None):
+        self.calls.append(("set_home_directory", dn))
+        if self.home_directory_result:
+            self.home_directories.append((dn, home_path, home_drive))
+        return self.home_directory_result
+
+    def require_secure_channel(self, operation="this operation"):
+        if not self.is_secure:
+            raise RuntimeError(f"AD refuses {operation} over an unencrypted connection")
 
     # -- assertions helpers ---------------------------------------------
 
@@ -1373,8 +1400,9 @@ def test_execute_sync_creates_the_user_sets_the_password_and_marks_it_synced(
     dn, attributes = client.created_users[0]
     assert dn == f"CN=Jan Novák,{target_ou}"
     assert attributes["userAccountControl"] == "512"
-    assert client.ops_for("unicodePwd") == [
-        (MODIFY_REPLACE, "unicodePwd", [f'"{GOOD_PASSWORD}"'.encode("utf-16-le")])]
+    # The UTF-16-LE encoding is ldap3's job now (extend.microsoft.modify_password);
+    # the service only has to delegate, over an encrypted channel.
+    assert client.passwords_set == [(dn, GOOD_PASSWORD)]
     assert person.ad_dn == dn
     assert person.ad_status is ADStatus.SYNCED
     assert person.is_dirty() is False
@@ -1454,7 +1482,7 @@ def test_execute_sync_reports_a_created_user_whose_password_failed(
         sync_service, ad_person, no_group_service):
     """The account exists, so the operation counts as a (partial) success."""
     client = sync_service.test_client
-    client.modify_results = {"unicodePwd": False}
+    client.set_password_error = RuntimeError("unwillingToPerform")
     person = ad_person()
     plan = SyncPlan(create_operations=[
         CreateOperation(person, f"OU=Trida-6.A,{BASE_DN}", {})])
@@ -1462,7 +1490,7 @@ def test_execute_sync_reports_a_created_user_whose_password_failed(
     result = sync_service.execute_sync(plan)
 
     assert result.statistics["successful"] == 1
-    assert "password setting failed" in result.successful[0].message
+    assert "password not set" in result.successful[0].message
     assert client.created_users
 
 
@@ -1492,7 +1520,10 @@ def test_execute_sync_keeps_a_created_user_when_group_sync_explodes(
 
     assert result.statistics["successful"] == 1
     assert no_group_service.synced == [person]
-    assert person.ad_status is ADStatus.SYNCED
+    # The account exists, so this is not a failure - but the groups are still
+    # outstanding, so claiming SYNCED would hide real pending work.
+    assert person.ad_status is ADStatus.UPDATE_PENDING
+    assert "groups not applied" in result.successful[0].message
 
 
 def test_execute_sync_skips_group_sync_for_a_person_without_groups(
@@ -1515,19 +1546,49 @@ def test_set_password_rejects_an_empty_password(sync_service, ad_person):
 
 def test_set_password_raises_when_the_client_refuses_the_change(
         sync_service, ad_person):
-    """A False from ``modify_user`` becomes a RuntimeError for the caller."""
-    sync_service.test_client.modify_results = {"unicodePwd": False}
-    with pytest.raises(RuntimeError, match="Failed to set password"):
+    """A refusal from the client propagates to the caller."""
+    sync_service.test_client.set_password_error = RuntimeError(
+        "Failed to set the password: unwillingToPerform")
+    with pytest.raises(RuntimeError, match="unwillingToPerform"):
         sync_service._set_password("CN=Jan,DC=skola", GOOD_PASSWORD, ad_person())
 
 
-def test_set_password_encodes_unicode_passwords_as_quoted_utf16le(
+def test_set_password_refuses_an_unencrypted_channel(sync_service, ad_person):
+    """AD will not set a password over plain LDAP - say so instead of failing
+    with an opaque 'unwillingToPerform' from the server."""
+    client = sync_service.test_client
+    client.is_secure = False
+    client.set_password_error = RuntimeError(
+        "AD refuses a password change over an unencrypted connection")
+    with pytest.raises(RuntimeError, match="unencrypted"):
+        sync_service._set_password("CN=Jan,DC=skola", GOOD_PASSWORD, ad_person())
+
+
+def test_set_password_passes_unicode_passwords_through_unchanged(
         sync_service, ad_person):
-    """AD wants the password wrapped in quotes and encoded UTF-16-LE."""
+    """The service must not mangle the password; encoding belongs to ldap3."""
     sync_service._set_password("CN=Jan,DC=skola", "Přílíš1!", ad_person())
 
-    assert sync_service.test_client.ops_for("unicodePwd") == [
-        (MODIFY_REPLACE, "unicodePwd", ['"Přílíš1!"'.encode("utf-16-le")])]
+    assert sync_service.test_client.passwords_set == [("CN=Jan,DC=skola", "Přílíš1!")]
+
+
+def test_set_password_still_applies_the_must_change_flag(sync_service, ad_person):
+    """pwdLastSet=0 forces a change at next logon and must survive the move."""
+    person = ad_person(password_must_change=True)
+    sync_service._set_password("CN=Jan,DC=skola", GOOD_PASSWORD, person)
+
+    assert sync_service.test_client.ops_for("pwdLastSet") == [
+        (MODIFY_REPLACE, "pwdLastSet", ["0"])]
+
+
+def test_a_failed_must_change_flag_does_not_undo_the_password(
+        sync_service, ad_person):
+    """The password is already set; a failing flag must not look like failure."""
+    sync_service.test_client.modify_results = {"pwdLastSet": False}
+    sync_service._set_password("CN=Jan,DC=skola", GOOD_PASSWORD,
+                               ad_person(password_must_change=True))
+
+    assert sync_service.test_client.passwords_set == [("CN=Jan,DC=skola", GOOD_PASSWORD)]
 
 
 @pytest.mark.integration
@@ -1593,8 +1654,8 @@ def test_execute_sync_fails_an_update_the_client_refuses(
 
     result = sync_service.execute_sync(plan)
 
-    assert result.failed[0].message == "Failed to update user attributes"
-    assert person.ad_status is ADStatus.EXISTS_IN_AD
+    assert "attributes were not updated" in result.failed[0].message
+    assert person.ad_status is ADStatus.UPDATE_PENDING
 
 
 def test_execute_sync_skips_a_conflict_nobody_answered(
@@ -1719,7 +1780,7 @@ def test_execute_sync_records_the_dn_of_a_user_created_without_a_password(
         sync_service, ad_person, no_group_service):
     """The account exists in AD, so the person must remember its DN."""
     client = sync_service.test_client
-    client.modify_results = {"unicodePwd": False}
+    client.set_password_error = RuntimeError("unwillingToPerform")
     person = ad_person()
     target_ou = f"OU=Trida-6.A,{BASE_DN}"
     plan = SyncPlan(create_operations=[CreateOperation(person, target_ou, {})])

@@ -75,7 +75,8 @@ class ADPlanTask(AbstractProgressTask):
     Task for creating an AD sync plan (connecting to AD and analyzing).
     """
 
-    def __init__(self, source, server: str, base_dn: str, username: str, password: str):
+    def __init__(self, source, server: str, base_dn: str, username: str, password: str,
+                 connection_options: dict = None):
         super().__init__(
             task_name="AD Connection & Analysis",
             is_deterministic=False,
@@ -86,6 +87,9 @@ class ADPlanTask(AbstractProgressTask):
         self.base_dn = base_dn
         self.username = username
         self.password = password
+        #: TLS settings from the AD connection panel - passwords can only be
+        #: set over an encrypted channel, so these must reach the client.
+        self.connection_options = dict(connection_options or {})
         self.sync_plan = None
         self.client = None
         self._ad_client_ctx = None
@@ -98,7 +102,8 @@ class ADPlanTask(AbstractProgressTask):
         self.emit_progress(-1, "Connecting to Active Directory...")
         self.emit_log(f"Connecting to {self.server}", LogLevel.INFO)
 
-        self._ad_client_ctx = ADClient(self.server, self.username, self.password)
+        self._ad_client_ctx = ADClient(self.server, self.username, self.password,
+                                       **(self.connection_options or {}))
         self.client = self._ad_client_ctx.__enter__()
 
         if not self.client.connection:

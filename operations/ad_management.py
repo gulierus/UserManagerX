@@ -46,13 +46,16 @@ class ADDiscoveryThread(QThread):
     discovery_finished = pyqtSignal(bool, object, str)
     progress = pyqtSignal(str)
     
-    def __init__(self, source, server, base_dn, username, password):
+    def __init__(self, source, server, base_dn, username, password,
+                 connection_options=None):
         super().__init__()
         self.source = source
         self.server = server
         self.base_dn = base_dn
         self.username = username
         self.password = password
+        #: TLS settings from the connection panel, applied to every client
+        self.connection_options = dict(connection_options or {})
         self._is_running = True
         
     def run(self):
@@ -62,7 +65,8 @@ class ADDiscoveryThread(QThread):
                 self.discovery_finished.emit(False, None, "Discovery cancelled")
                 return
                 
-            with ADClient(self.server, self.username, self.password) as client:
+            with ADClient(self.server, self.username, self.password,
+                          **self.connection_options) as client:
                 if not client.connection:
                     self.discovery_finished.emit(False, None, "Failed to connect to AD")
                     return
@@ -425,7 +429,42 @@ class ADManagementWidget(QWidget):
         self.ad_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
         row4.addWidget(self.ad_pass_input)
         conn_layout.addLayout(row4)
-        
+
+        # --- security --------------------------------------------------------
+        # Active Directory REFUSES to set a password over an unencrypted
+        # connection (error 53, "problem 5003 WILL_NOT_PERFORM"), so the
+        # channel has to be encrypted for credentials to work at all.
+        row5 = QHBoxLayout()
+        self.ad_start_tls_check = QCheckBox("Encrypt connection (StartTLS)")
+        self.ad_start_tls_check.setChecked(True)
+        self.ad_start_tls_check.setToolTip(
+            "Upgrade a plain ldap:// connection to an encrypted one.\n"
+            "Active Directory only accepts password changes over an encrypted\n"
+            "channel - without this, setting passwords fails with\n"
+            "'unwillingToPerform'.\n"
+            "Use an ldaps:// address instead to connect encrypted from the start."
+        )
+        row5.addWidget(self.ad_start_tls_check)
+
+        self.ad_validate_cert_check = QCheckBox("Verify server certificate")
+        self.ad_validate_cert_check.setChecked(False)
+        self.ad_validate_cert_check.setToolTip(
+            "Verify the domain controller's certificate.\n"
+            "Usually off, because school domain controllers commonly use a\n"
+            "self-signed certificate."
+        )
+        row5.addWidget(self.ad_validate_cert_check)
+        row5.addStretch()
+        conn_layout.addLayout(row5)
+
+        self.ad_security_hint = QLabel(
+            "ℹ️ Passwords can only be set over an encrypted connection "
+            "(ldaps:// or StartTLS)."
+        )
+        self.ad_security_hint.setWordWrap(True)
+        self.ad_security_hint.setStyleSheet("color: #888; font-size: 10px;")
+        conn_layout.addWidget(self.ad_security_hint)
+
         layout.addWidget(conn_group)
         
         # Operations Panel
@@ -521,6 +560,18 @@ class ADManagementWidget(QWidget):
         
         layout.addWidget(self.person_table)
         
+    def get_connection_options(self) -> dict:
+        """
+        Return the keyword arguments every ADClient in this widget is built with.
+
+        Keeping it in one place means the security settings cannot be applied
+        to some connections and forgotten on others.
+        """
+        return {
+            "use_start_tls": self.ad_start_tls_check.isChecked(),
+            "validate_certificate": self.ad_validate_cert_check.isChecked(),
+        }
+
     def set_source(self, source):
         """Set the current source"""
         self.current_source = source
@@ -1159,7 +1210,8 @@ class ADManagementWidget(QWidget):
         
         # Start discovery thread
         self.discovery_thread = ADDiscoveryThread(
-            self.current_source, server, base_dn, username, password
+            self.current_source, server, base_dn, username, password,
+            self.get_connection_options()
         )
         self.discovery_thread.discovery_finished.connect(
             lambda s, r, m: self.on_discovery_finished(s, r, m, progress)
@@ -1250,7 +1302,8 @@ class ADManagementWidget(QWidget):
         progress.show()
         
         self.discovery_thread = ADDiscoveryThread(
-            self.current_source, server, base_dn, username, password
+            self.current_source, server, base_dn, username, password,
+            self.get_connection_options()
         )
         self.discovery_thread.discovery_finished.connect(
             lambda s, r, m: self.on_discovery_before_sync_finished(s, r, m, progress, 
@@ -1281,7 +1334,8 @@ class ADManagementWidget(QWidget):
         from utils.progress_dialog import ProgressDialog
 
         # Step 1: Connect to AD and build sync plan asynchronously
-        plan_task = ADPlanTask(self.current_source, server, base_dn, username, password)
+        plan_task = ADPlanTask(self.current_source, server, base_dn, username, password,
+                               self.get_connection_options())
         plan_dialog = ProgressDialog(plan_task, self)
         plan_dialog.start_task()
         plan_dialog.exec()

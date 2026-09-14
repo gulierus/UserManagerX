@@ -27,50 +27,191 @@ class ADUserEntry:
 class ADClient:
     """Low-level wrapper around ldap3 for AD operations"""
     
-    def __init__(self, server: str, username: str, password: str):
+    def __init__(self, server: str, username: str, password: str,
+                 use_ssl: Optional[bool] = None, use_start_tls: bool = True,
+                 validate_certificate: bool = False):
         """
         Initialize AD client
-        
+
         Args:
-            server: LDAP server URL (ldap://dc.example.com)
+            server: LDAP server URL (``ldap://dc.example.com`` or
+                ``ldaps://dc.example.com``)
             username: Admin username (domain\\user)
             password: Admin password
+            use_ssl: Force LDAPS on/off. ``None`` derives it from the URL
+                scheme (``ldaps://`` -> True).
+            use_start_tls: When the connection is not already LDAPS, try to
+                upgrade it with StartTLS. Active Directory REFUSES to set a
+                password over an unencrypted channel, so this is on by default.
+            validate_certificate: Verify the server certificate. Off by
+                default because school domain controllers commonly use a
+                self-signed certificate.
         """
         self.server = server
         self.username = username
         self.password = password
         self.connection = None
-        
+
+        self.use_ssl = use_ssl
+        self.use_start_tls = use_start_tls
+        self.validate_certificate = validate_certificate
+
+        #: True once the channel is encrypted (LDAPS or a successful StartTLS).
+        #: Password operations check this before they even try.
+        self.is_secure = False
+        #: Why the channel could not be encrypted, for the error message.
+        self.tls_error: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
+
+    def _resolve_ssl(self) -> bool:
+        """Decide whether to open the connection as LDAPS."""
+        if self.use_ssl is not None:
+            return bool(self.use_ssl)
+        return str(self.server or "").strip().lower().startswith("ldaps://")
+
     def connect(self) -> bool:
-        """Establish connection to AD"""
+        """
+        Establish a connection to AD, encrypting it where possible.
+
+        Active Directory only accepts a password change (``unicodePwd``) over
+        an encrypted channel. Over plain LDAP it answers
+
+            result 53, unwillingToPerform,
+            "0000001F: SvcErr: DSID-031A1260, problem 5003 (WILL_NOT_PERFORM)"
+
+        which is exactly the error users were seeing. The connection is
+        therefore opened as LDAPS when the URL says so, and otherwise upgraded
+        with StartTLS. A failed upgrade is not fatal - everything except
+        password changes works fine unencrypted - but it is remembered in
+        :attr:`tls_error` so the password step can explain itself.
+
+        Returns:
+            True when the bind succeeded.
+        """
         try:
             require_ldap3()
             from ldap3 import Server, Connection, ALL, Tls
-            
-            # Test 
-            # tls_conf = Tls(validate=CERT_NONE)
-            # server_obj = Server(self.server, port=636, use_ssl=True, get_info=ALL)
-            # self.connection = Connection(
-            #     server_obj,
-            #     user=self.username,
-            #     password=self.password,
-            #     authentication=NTLM,
-            #     auto_bind=True
-            # )
 
-            server_obj = Server(self.server, get_info=ALL)
+            use_ssl = self._resolve_ssl()
+
+            tls_configuration = None
+            try:
+                import ssl as _ssl
+                tls_configuration = Tls(
+                    validate=_ssl.CERT_REQUIRED if self.validate_certificate
+                    else _ssl.CERT_NONE
+                )
+            except Exception as exc:                 # pragma: no cover - defensive
+                logger.warning("Could not build a TLS configuration: %s", exc)
+
+            server_obj = Server(self.server, use_ssl=use_ssl, get_info=ALL,
+                                tls=tls_configuration)
             self.connection = Connection(
                 server_obj,
                 user=self.username,
                 password=self.password,
                 auto_bind=True
             )
-            logger.info(f"Connected to AD server: {self.server}")
+
+            self.is_secure = bool(use_ssl)
+            self.tls_error = None
+
+            if not self.is_secure and self.use_start_tls:
+                try:
+                    if self.connection.start_tls():
+                        self.is_secure = True
+                        logger.info("Upgraded the AD connection with StartTLS")
+                    else:
+                        self.tls_error = str(self.connection.result)
+                        logger.warning("StartTLS was refused by the server: %s",
+                                       self.tls_error)
+                except Exception as exc:
+                    self.tls_error = str(exc)
+                    logger.warning("StartTLS failed: %s", exc)
+
+            logger.info("Connected to AD server: %s (encrypted: %s)",
+                        self.server, "yes" if self.is_secure else "NO")
             return True
-            
+
         except Exception as e:
             logger.exception("Failed to connect to AD")
             return False
+
+    def require_secure_channel(self, operation: str = "this operation") -> None:
+        """
+        Raise a helpful error when the channel is not encrypted.
+
+        Args:
+            operation: Name of the operation for the message.
+
+        Raises:
+            RuntimeError: If the connection is not encrypted.
+        """
+        if self.is_secure:
+            return
+
+        detail = f" (StartTLS failed: {self.tls_error})" if self.tls_error else ""
+        raise RuntimeError(
+            f"Active Directory refuses {operation} over an unencrypted "
+            f"connection{detail}.\n\n"
+            f"Use an 'ldaps://' server address (port 636), or enable StartTLS, "
+            f"and make sure the domain controller has a server certificate "
+            f"installed."
+        )
+
+    def set_password(self, dn: str, password: str) -> bool:
+        """
+        Set a user's password.
+
+        Uses the dedicated ldap3 helper, which builds the UTF-16-LE encoded
+        ``unicodePwd`` value the way Active Directory expects and picks the
+        right modification for the server.
+
+        Args:
+            dn: Distinguished Name of the user.
+            password: The new password.
+
+        Returns:
+            True on success.
+
+        Raises:
+            RuntimeError: If not connected, the channel is unencrypted, or the
+                server refused the change.
+        """
+        if not self.connection:
+            raise RuntimeError("Not connected to AD")
+        if not password:
+            raise ValueError("Password cannot be empty")
+
+        self.require_secure_channel("a password change")
+
+        try:
+            success = self.connection.extend.microsoft.modify_password(dn, password)
+        except Exception as exc:
+            logger.error("Password change for %s raised: %s", dn, exc)
+            raise RuntimeError(f"Failed to set the password: {exc}")
+
+        if not success:
+            result = self.connection.result or {}
+            description = result.get('description', 'unknown error')
+            message = result.get('message', '')
+            logger.error("Failed to set password for %s: %s", dn, result)
+
+            if 'WILL_NOT_PERFORM' in str(message) or description == 'unwillingToPerform':
+                raise RuntimeError(
+                    "Active Directory refused the password change "
+                    "(unwillingToPerform). The usual causes are an "
+                    "unencrypted connection, a password that does not meet the "
+                    "domain password policy, or the account used for the "
+                    "connection lacking the 'Reset password' permission."
+                )
+            raise RuntimeError(f"Failed to set the password: {description} {message}")
+
+        logger.info("Password set for %s", dn)
+        return True
     
     def disconnect(self):
         """Close connection to AD"""
