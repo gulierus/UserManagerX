@@ -55,6 +55,61 @@ def remove_diacritics(text: str) -> str:
         return text
 
 
+def _username_base_from_policy(first_name: str, last_name: str,
+                               class_name: str = "") -> Optional[str]:
+    """
+    Render the configured user-name pattern, or ``None`` to use the default.
+
+    Returns ``None`` when the policy still carries the factory template, so the
+    historical index/length behaviour of :func:`generate_username` is kept for
+    every caller that never configured anything.
+    """
+    try:
+        from utils.username_policy import (
+            DEFAULT_TEMPLATE, UsernameTemplateError, get_username_policy,
+        )
+        policy = get_username_policy()
+        if policy.template == DEFAULT_TEMPLATE:
+            return None
+        return policy.render(first_name, last_name, class_name)
+    except UsernameTemplateError as exc:
+        raise ValueError(f"User name pattern could not be applied: {exc}")
+    except ImportError:                              # pragma: no cover - defensive
+        return None
+
+
+def _make_unique(base_username: str, existing: Set[str]) -> str:
+    """
+    Append a counter until *base_username* is free.
+
+    Args:
+        base_username: The name the pattern produced.
+        existing: User names already taken.
+
+    Returns:
+        A unique user name no longer than :data:`USERNAME_MAX_LENGTH`.
+
+    Raises:
+        RuntimeError: If no free variant could be found.
+    """
+    base_username = base_username[:USERNAME_MAX_LENGTH]
+    username = base_username
+    counter = 2
+    attempts = 0
+    max_attempts = 1000
+
+    while username in existing and attempts < max_attempts:
+        suffix = str(counter)
+        username = f"{base_username[:USERNAME_MAX_LENGTH - len(suffix)]}{suffix}"
+        counter += 1
+        attempts += 1
+
+    if username in existing:
+        raise RuntimeError(f"Could not generate a unique user name from "
+                           f"'{base_username}'")
+    return username
+
+
 def generate_username(
     first_name: str, 
     last_name: str, 
@@ -62,7 +117,8 @@ def generate_username(
     last_name_index: Optional[int] = -1,
     first_name_index: Optional[int] = 1,
     last_name_length: Optional[int] = None,
-    first_name_length: Optional[int] = None
+    first_name_length: Optional[int] = None,
+    class_name: str = ""
 ) -> str:
     """
     Generate username in format: lastname + firstname
@@ -105,6 +161,15 @@ def generate_username(
         raise ValueError("First name cannot be empty")
     if not last_name or not last_name.strip():
         raise ValueError("Last name cannot be empty")
+
+    # A user-configured pattern (Operations tab -> "Username Format...") takes
+    # over the construction of the base name.  When the policy still holds the
+    # factory template, the original index/length logic below runs unchanged,
+    # so every existing caller keeps its behaviour.
+    policy_base = _username_base_from_policy(first_name, last_name, class_name)
+    if policy_base is not None:
+        return _make_unique(policy_base, existing)
+
     
     # Split last_name by spaces to handle multiple last names
     last_name_parts = last_name.strip().split()
@@ -506,8 +571,12 @@ class ValidationIssue:
     message: str
     severity: str  # 'error', 'warning'
     
-# Username pattern: lowercase alphanumeric starting with letter, max 20 chars
-USERNAME_PATTERN = re.compile(r'^[a-z][a-z0-9]{0,19}$')
+# Username pattern: starts with a letter, then letters, digits and the
+# separators Active Directory genuinely permits in a sAMAccountName.
+# It used to allow letters and digits only, which rejected perfectly valid
+# names such as "nova.j" - and therefore any user-configured pattern that uses
+# a separator.  (AD forbids " / \ [ ] : ; | = , + * ? < > and a trailing dot.)
+USERNAME_PATTERN = re.compile(r'^[a-z][a-z0-9._-]{0,19}$')
 
 #: Maximum length of a generated user name (sAMAccountName limit).
 USERNAME_MAX_LENGTH = 20
@@ -753,6 +822,22 @@ def username_matches_convention(username: str, first_name: str,
     if not username:
         return False
 
+    # With a user-configured pattern the "last name + first name" convention no
+    # longer applies - the pattern IS the convention, so anything it can
+    # produce is correct by definition.
+    try:
+        from utils.username_policy import DEFAULT_TEMPLATE, get_username_policy
+        policy = get_username_policy()
+        if policy.template != DEFAULT_TEMPLATE:
+            try:
+                expected = policy.render(first_name, last_name)
+            except Exception:
+                return True
+            stripped = re.sub(r'\d+$', '', username.lower()) or username.lower()
+            return username.lower() == expected or stripped == expected
+    except ImportError:                              # pragma: no cover - defensive
+        pass
+
     candidate = username.lower()
 
     # Remove a trailing duplicate counter ("novakjan2" -> "novakjan")
@@ -847,12 +932,12 @@ def validate_username(person: Person) -> List[ValidationIssue]:
                 ))
             
             # Check for invalid characters
-            if not all(c.isascii() and c.isalnum() for c in username):
+            if not all(c.isascii() and (c.isalnum() or c in '._-') for c in username):
                 issues.append(ValidationIssue(
                     person=person,
                     field='ad_username',
                     issue_type='invalid_format',
-                    message="Username can only contain letters and numbers",
+                    message="Username can only contain letters, numbers and . - _",
                     severity='error'
                 ))
 

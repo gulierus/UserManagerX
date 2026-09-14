@@ -29,6 +29,8 @@ from utils.ad_utils import generate_username, generate_password, generate_displa
 from ui.bulk_edit_dialog import BulkEditDialog
 from ui.group_management_dialog import GroupManagementDialog, show_group_management_dialog
 from ui.password_policy_dialog import PasswordPolicyDialog
+from ui.username_policy_dialog import UsernamePolicyDialog
+from ui.home_template_dialog import HomeDirectoryTemplateDialog
 
 logger = logging.getLogger(__name__)
 
@@ -476,29 +478,59 @@ class ADManagementWidget(QWidget):
         discover_btn.clicked.connect(self.discover_in_ad)
         ops_layout.addWidget(discover_btn)
         
-        gen_all_btn = QPushButton("🔑 Generate All Credentials")
+        # --- credential generation (point 09) ----------------------------
+        # Four commands - {all credentials, only missing} x {all people,
+        # selected people} - would be four buttons. Two of them differ only in
+        # WHO they apply to, which is a property of the current selection, not
+        # a different operation. So the operation stays a button and the scope
+        # becomes a combo box next to it: two controls instead of four, and the
+        # chosen scope is visible rather than implied by the button caption.
+        # (A radio pair was the alternative; it costs more width and the scope
+        # is not a mode the user keeps switching, so a combo reads better.)
+        self.generate_scope_combo = QComboBox()
+        self.generate_scope_combo.addItem("for all persons", "all")
+        self.generate_scope_combo.addItem("for selected persons", "selected")
+        self.generate_scope_combo.setToolTip(
+            "Which persons the two Generate buttons apply to."
+        )
+        ops_layout.addWidget(QLabel("Generate:"))
+        ops_layout.addWidget(self.generate_scope_combo)
+
+        gen_all_btn = QPushButton("🔑 All Credentials")
+        gen_all_btn.setToolTip(
+            "Generate user name, password and display name, overwriting "
+            "whatever is already there."
+        )
         gen_all_btn.clicked.connect(self.generate_all_credentials)
         ops_layout.addWidget(gen_all_btn)
-        
-        gen_missing_btn = QPushButton("➕ Generate Missing")
+
+        gen_missing_btn = QPushButton("➕ Only Missing")
+        gen_missing_btn.setToolTip(
+            "Only fill in what is missing; existing credentials are kept."
+        )
         gen_missing_btn.clicked.connect(self.generate_missing_credentials)
         ops_layout.addWidget(gen_missing_btn)
-        
+
         analyze_btn = QPushButton("📊 Analyze Source")
         analyze_btn.clicked.connect(self.analyze_source)
         ops_layout.addWidget(analyze_btn)
-        
+
         manage_groups_btn = QPushButton("🗂️ Manage Groups...")
         manage_groups_btn.clicked.connect(self.open_group_management)
         ops_layout.addWidget(manage_groups_btn)
 
-        password_format_btn = QPushButton("🔐 Password Format...")
-        password_format_btn.setToolTip(
-            "Define how generated passwords look (length, required character "
-            "types). The same rules are used when passwords are validated."
+        # --- format editors, grouped behind one control (point 11b) -------
+        self.format_combo = QComboBox()
+        self.format_combo.addItem("⚙ Formats…", None)
+        self.format_combo.addItem("🔐 Password Format…", "password")
+        self.format_combo.addItem("🔤 Username Format…", "username")
+        self.format_combo.addItem("🏠 Home Directory Templates…", "home")
+        self.format_combo.setToolTip(
+            "Define how generated passwords, user names and home directory "
+            "paths are built. The same rules are used for validation."
         )
-        password_format_btn.clicked.connect(self.open_password_format)
-        ops_layout.addWidget(password_format_btn)
+        self.format_combo.activated.connect(self._on_format_chosen)
+        ops_layout.addWidget(self.format_combo)
 
         sync_btn = QPushButton("🔄 Synchronize")
         sync_btn.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
@@ -907,6 +939,9 @@ class ADManagementWidget(QWidget):
         """
         Validate the preconditions shared by both generation commands.
 
+        Honours the scope chosen next to the buttons: either every person in
+        the source, or only the ones selected in the table.
+
         Returns:
             The list of persons to work on, or ``None`` when the operation
             cannot run (a message has already been shown).
@@ -920,12 +955,58 @@ class ADManagementWidget(QWidget):
                                 "This source is read-only. Create a copy first.")
             return None
 
+        if self.generate_scope_combo.currentData() == "selected":
+            persons = self.get_selected_persons()
+            if not persons:
+                QMessageBox.warning(
+                    self, "No Selection",
+                    "The scope is set to 'for selected persons', but nothing is "
+                    "selected in the table.\n\nSelect the persons you want, or "
+                    "switch the scope to 'for all persons'."
+                )
+                return None
+            return persons
+
         persons = self.current_source.get_all_persons()
         if not persons:
             QMessageBox.information(self, "No Persons", "No persons found in source")
             return None
 
         return persons
+
+    def _on_format_chosen(self, index: int) -> None:
+        """Open the format editor the user picked, then reset the combo."""
+        choice = self.format_combo.itemData(index)
+        # Always fall back to the caption entry so the control reads as a menu
+        # rather than as a setting that is currently "Password Format".
+        self.format_combo.setCurrentIndex(0)
+
+        if choice == "password":
+            self.open_password_format()
+        elif choice == "username":
+            self.open_username_format()
+        elif choice == "home":
+            self.open_home_directory_templates()
+
+    def open_username_format(self):
+        """Open the dialog that defines how generated user names look."""
+        dialog = UsernamePolicyDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        policy = dialog.get_policy()
+        QMessageBox.information(
+            self, "Username Format Saved",
+            f"New user names will be generated as:\n\n{policy.describe()}\n\n"
+            "Existing user names are not changed. Use 'All Credentials' or the "
+            "per-person editor to re-generate them."
+        )
+        self.refresh_person_table()
+
+    def open_home_directory_templates(self):
+        """Open the home directory template manager."""
+        dialog = HomeDirectoryTemplateDialog(self)
+        dialog.exec()
 
     @staticmethod
     def _describe_person(person) -> str:
@@ -980,7 +1061,8 @@ class ADManagementWidget(QWidget):
         username = None
         if needs_username:
             try:
-                username = generate_username(first_name, last_name, existing_usernames)
+                username = generate_username(first_name, last_name, existing_usernames,
+                                         class_name=(person.class_name or "").strip())
             except (ValueError, IndexError, RuntimeError) as exc:
                 return f"user name could not be generated ({exc})"
 

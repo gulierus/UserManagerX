@@ -344,10 +344,17 @@ class HomeDirectoryPathGenerator:
 class HomeDirectoryTemplateManager:
     """Manager for home directory templates"""
     
-    def __init__(self):
+    #: Settings category the user's own templates are stored in.
+    SETTINGS_CATEGORY = "home_directory_templates"
+
+    def __init__(self, load_saved: bool = True):
         """Initialize template manager"""
         self.templates: Dict[str, str] = {}
         self._load_default_templates()
+        #: names that ship with the application and cannot be deleted
+        self.builtin_names = set(self.templates)
+        if load_saved:
+            self.load()
         logger.info("HomeDirectoryTemplateManager initialized")
     
     def _load_default_templates(self):
@@ -398,6 +405,92 @@ class HomeDirectoryTemplateManager:
         """Get all templates"""
         return self.templates.copy()
     
+    def is_builtin(self, name: str) -> bool:
+        """True for a template that ships with the application."""
+        return name in self.builtin_names
+
+    def update_template(self, name: str, template: str) -> bool:
+        """
+        Replace the body of an existing template.
+
+        Args:
+            name: Template name.
+            template: The new path pattern.
+
+        Returns:
+            True when the template existed and was replaced.
+        """
+        if name not in self.templates:
+            return False
+        self.templates[name] = template
+        logger.info("Updated home directory template: %s", name)
+        return True
+
+    def rename_template(self, old_name: str, new_name: str) -> bool:
+        """
+        Rename a template, keeping its body.
+
+        Returns:
+            True when the rename happened.
+        """
+        if old_name not in self.templates or not new_name:
+            return False
+        if new_name in self.templates:
+            return False
+        self.templates[new_name] = self.templates.pop(old_name)
+        logger.info("Renamed home directory template: %s -> %s", old_name, new_name)
+        return True
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def load(self) -> None:
+        """
+        Merge the user's own templates over the built-in ones.
+
+        Without this the manager was rebuilt from the built-in examples on
+        every construction, so a template the user created only survived as
+        long as the dialog that created it.
+        """
+        try:
+            from utils.settings_manager import get_settings
+            stored = get_settings().get_category(self.SETTINGS_CATEGORY)
+        except Exception:
+            logger.exception("Could not load the home directory templates")
+            return
+
+        for name, template in (stored or {}).items():
+            if isinstance(name, str) and isinstance(template, str) and template:
+                self.templates[name] = template
+
+    def save(self) -> bool:
+        """
+        Persist the templates the user added or changed.
+
+        Built-in templates are only stored when their body was edited, so a
+        later change to the shipped defaults still reaches existing users.
+
+        Returns:
+            True when the settings file was written.
+        """
+        try:
+            from utils.settings_manager import get_settings
+            defaults = {}
+            probe = HomeDirectoryTemplateManager.__new__(HomeDirectoryTemplateManager)
+            probe.templates = {}
+            probe._load_default_templates()
+            defaults = probe.templates
+
+            custom = {
+                name: body for name, body in self.templates.items()
+                if defaults.get(name) != body
+            }
+            return get_settings().set_category(self.SETTINGS_CATEGORY, custom)
+        except Exception:
+            logger.exception("Could not save the home directory templates")
+            return False
+
     def template_exists(self, name: str) -> bool:
         """Check if template exists"""
         return name in self.templates

@@ -316,7 +316,7 @@ def test_validate_person_forwards_username_format_problems(ad_person):
 
     messages = " | ".join(i.message for i in result.errors)
     assert "lowercase" in messages
-    assert "letters and numbers" in messages
+    assert "letters, numbers and . - _" in messages
     assert result.is_valid is False
 
 

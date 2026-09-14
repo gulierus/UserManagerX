@@ -572,7 +572,8 @@ def test_validate_username_accepts_a_generated_name(make_person):
     ("NovakJan", "Username must be lowercase"),
     ("novákjan", "Username must not contain diacritics"),
     ("1novakjan", "Username must start with a letter"),
-    ("novak_jan", "Username can only contain letters and numbers"),
+    # '_' '.' '-' are legal in a sAMAccountName; a space is not.
+    ("novak jan", "Username can only contain letters, numbers and . - _"),
 ])
 def test_validate_username_reports_the_offending_rule(make_person, username, expected):
     """Every broken rule produces its own error message."""
@@ -591,8 +592,19 @@ def test_validate_username_reports_every_broken_rule_at_once(make_person):
     assert "Username must be lowercase" in messages
     assert "Username must not contain diacritics" in messages
     assert "Username must start with a letter" in messages
-    assert "Username can only contain letters and numbers" in messages
+    assert "Username can only contain letters, numbers and . - _" in messages
     assert any(m.startswith("Username too long") for m in messages)
+
+
+@pytest.mark.parametrize("username", ["novak.jan", "novak-jan", "novak_jan"])
+def test_validate_username_accepts_the_separators_ad_allows(make_person, username):
+    """AD permits . - _ in a sAMAccountName, so the format check must too.
+
+    Rejecting them also made every user-name pattern that uses a separator
+    (Operations tab -> "Username Format...") unusable.
+    """
+    issues = validate_username(make_person("Jan", "Novák", ad_username=username))
+    assert not [i for i in issues if i.severity == "error"], _messages(issues)
 
 
 def test_validate_username_warns_when_the_convention_is_broken(make_person):
