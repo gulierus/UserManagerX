@@ -5,10 +5,14 @@ VERSION 2 - With automatic source detection (no refresh button)
 
 import logging
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QPushButton, QListWidget, QStackedWidget, QGroupBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QFrame,
+    QPushButton, QListWidget, QScrollArea, QSplitter, QStackedWidget, QGroupBox
 )
 from PyQt6.QtCore import Qt
+
+from ui.settings_tab import (
+    CATEGORY_CAPTION_STYLE, CATEGORY_LIST_STYLE, CATEGORY_PANEL_STYLE,
+)
 
 from operations.ad_management import ADManagementWidget
 from operations.pdf_export import PDFExportWidget
@@ -73,39 +77,84 @@ class OperationsTab(QWidget):
         
         layout.addWidget(source_group)
         
-        # Main content area - horizontal split
-        content_layout = QHBoxLayout()
-        
-        # Left side - operation list
-        operations_group = QGroupBox("Available Operations")
-        operations_layout = QVBoxLayout(operations_group)
-        
+        # Main content area - a draggable split between the operation list and
+        # the selected operation, so a wide form (AD management) can be given
+        # room without the list eating a fixed share of the window.
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left side - operation chooser.  Styled exactly like the category
+        # chooser on the Settings tab (same module-level constants), so the two
+        # "pick a section" sidebars of the application look identical.
+        operations_container = QFrame()
+        operations_container.setFrameShape(QFrame.Shape.StyledPanel)
+        operations_container.setObjectName("categoryContainer")
+        operations_container.setStyleSheet(CATEGORY_PANEL_STYLE)
+
+        operations_layout = QVBoxLayout(operations_container)
+        operations_layout.setContentsMargins(6, 6, 6, 6)
+        operations_layout.setSpacing(4)
+
+        operations_caption = QLabel("OPERATIONS")
+        operations_caption.setStyleSheet(CATEGORY_CAPTION_STYLE)
+        operations_layout.addWidget(operations_caption)
+
         self.operation_list = QListWidget()
+        self.operation_list.setStyleSheet(CATEGORY_LIST_STYLE)
         self.operation_list.addItems([
             "Active Directory Management",
             "Export to Encrypted PDF",
             "Export to Encrypted JSON"
         ])
         self.operation_list.currentRowChanged.connect(self.on_operation_changed)
-        operations_layout.addWidget(self.operation_list)
-        
-        content_layout.addWidget(operations_group, stretch=1)
-        
+        operations_layout.addWidget(self.operation_list, stretch=1)
+
+        operations_container.setMinimumWidth(170)
+        splitter.addWidget(operations_container)
+
         # Right side - operation-specific widget
+        operation_container = QFrame()
+        operation_container.setFrameShape(QFrame.Shape.StyledPanel)
+        operation_container.setObjectName("panelContainer")
+        operation_container.setStyleSheet(
+            "QFrame#panelContainer {"
+            "  border: 1px solid rgba(122, 162, 224, 70);"
+            "  border-radius: 6px;"
+            "}"
+        )
+        operation_layout = QVBoxLayout(operation_container)
+        operation_layout.setContentsMargins(2, 2, 2, 2)
+
         self.operation_stack = QStackedWidget()
-        
+
         # Create operation widgets
         self.ad_widget = ADManagementWidget(self.source_manager)
         self.pdf_widget = PDFExportWidget(self.source_manager)
         self.json_widget = JSONExportWidget(self.source_manager)
-        
+
         self.operation_stack.addWidget(self.ad_widget)
         self.operation_stack.addWidget(self.pdf_widget)
         self.operation_stack.addWidget(self.json_widget)
-        
-        content_layout.addWidget(self.operation_stack, stretch=3)
 
-        layout.addLayout(content_layout, stretch=1)
+        # The AD management form is ~1065 px wide at its minimum, which would
+        # pin the splitter and make it undraggable.  Scrolling the operation
+        # panel instead lets the user give the list as much room as they like.
+        operation_scroll = QScrollArea()
+        operation_scroll.setWidgetResizable(True)
+        operation_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        operation_scroll.setWidget(self.operation_stack)
+        operation_layout.addWidget(operation_scroll, stretch=1)
+
+        operation_container.setMinimumWidth(260)
+        splitter.addWidget(operation_container)
+
+        splitter.setSizes([220, 780])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setHandleWidth(8)
+        splitter.setChildrenCollapsible(False)
+        self.content_splitter = splitter
+
+        layout.addWidget(splitter, stretch=1)
 
         # The stack shows page 0 from the start, but the list had no current
         # row, so the visible operation was not the highlighted one.  Selecting

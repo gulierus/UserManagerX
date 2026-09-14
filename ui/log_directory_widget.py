@@ -119,10 +119,13 @@ class LogDirectoryWidget(QWidget):
         # (a) Base path — the parent directory where the log folder is created
         base_row = QHBoxLayout()
         self._base_input = QLineEdit()
-        self._base_input.setPlaceholderText(get_application_directory())
+        # NO placeholder here, on purpose.  A greyed-out path in an empty field
+        # reads as "this is the value", and the widget then silently
+        # substituted it - so clearing the field and pressing Save looked like
+        # it had worked.  An empty base path is now visibly empty, and invalid.
         self._base_input.setToolTip(
             "The directory in which the log folder will be created.\n"
-            "Leave empty to use the application's working directory."
+            "It must not be empty - press ↺ to restore the default."
         )
         self._base_input.textChanged.connect(self._on_any_change)
         base_row.addWidget(self._base_input, stretch=1)
@@ -247,8 +250,19 @@ class LogDirectoryWidget(QWidget):
         """
         Return the base-path component.
 
-        Falls back to the application directory when the field was cleared,
-        so callers never have to deal with an empty value.
+        No fallback: an empty field is reported as empty so :meth:`validate`
+        can refuse it.  Substituting the application directory here made a
+        cleared field save successfully while displaying nothing.
+        """
+        return self._base_input.text().strip()
+
+    def get_effective_base_path(self) -> str:
+        """
+        Return a base path that is always usable.
+
+        Same as :meth:`get_base_path`, but falls back to the application
+        directory. Used for the preview, which must show something even while
+        the user is mid-edit.
         """
         return self._base_input.text().strip() or get_application_directory()
 
@@ -314,6 +328,16 @@ class LogDirectoryWidget(QWidget):
         base_raw = self._base_input.text().strip()
         folder_raw = self._folder_input.text().strip()
         file_raw = self._file_input.text().strip()
+
+        # An empty base path used to be silently replaced by the application
+        # directory, so clearing the field and pressing "Save All Settings"
+        # reported success while the field showed nothing.
+        if not base_raw:
+            problems.append(
+                "Base path is empty - enter a directory, or press ↺ to restore "
+                "the application directory."
+            )
+            return problems
 
         # --- character checks ------------------------------------------
         if any(char in base_raw for char in _INVALID_PATH_CHARS):

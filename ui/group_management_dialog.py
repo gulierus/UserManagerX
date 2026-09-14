@@ -1063,14 +1063,24 @@ class GroupManagementDialog(QDialog):
             group_list_w.addItem(item)
         layout.addWidget(group_list_w)
 
+        # Selecting every group was possible, clearing the selection was not -
+        # the user had to untick each entry by hand.
+        def _set_all(state: Qt.CheckState) -> None:
+            for index in range(group_list_w.count()):
+                group_list_w.item(index).setCheckState(state)
+
+        selection_row = QHBoxLayout()
         sel_all_btn = QPushButton("Select All")
-        sel_all_btn.clicked.connect(
-            lambda: [
-                group_list_w.item(i).setCheckState(Qt.CheckState.Checked)
-                for i in range(group_list_w.count())
-            ]
-        )
-        layout.addWidget(sel_all_btn)
+        sel_all_btn.clicked.connect(lambda: _set_all(Qt.CheckState.Checked))
+        selection_row.addWidget(sel_all_btn)
+
+        sel_none_btn = QPushButton("Deselect All")
+        sel_none_btn.setToolTip("Clear the selection of every group in the list")
+        sel_none_btn.clicked.connect(lambda: _set_all(Qt.CheckState.Unchecked))
+        selection_row.addWidget(sel_none_btn)
+
+        selection_row.addStretch()
+        layout.addLayout(selection_row)
 
         # ---- Inline validation status area ----
         layout.addWidget(QLabel("<b>Validation:</b>"))

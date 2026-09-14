@@ -200,11 +200,29 @@ def test_new_widget_uses_the_documented_folder_and_file_defaults(widget):
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\t"])
-def test_blank_base_path_falls_back_to_the_application_directory(
-        widget, app_dir, blank):
-    """Clearing the field is not a hidden state - the app directory is used."""
+def test_a_cleared_base_path_stays_empty_and_is_rejected(widget, blank):
+    """Clearing the field must be visible and must block saving.
+
+    It used to be silently replaced by the application directory - which was
+    also shown as a grey placeholder - so the field looked filled in and
+    "Save All Settings" reported success while the user had cleared it.
+    """
     widget._base_input.setText(blank)
-    assert widget.get_base_path() == str(app_dir)
+
+    assert widget.get_base_path() == ""
+    assert widget._base_input.placeholderText() == ""
+    problems = widget.validate()
+    assert problems and "empty" in problems[0].lower()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_a_cleared_base_path_still_previews_the_effective_location(
+        widget, app_dir, blank):
+    """The preview must stay useful while the field is being edited."""
+    widget._base_input.setText(blank)
+
+    assert widget.get_effective_base_path() == str(app_dir)
+    assert widget.get_full_path().startswith(str(app_dir))
 
 
 @pytest.mark.parametrize("blank", ["", "   "])

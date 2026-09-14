@@ -48,6 +48,39 @@ from utils.settings_manager import (
 logger = logging.getLogger(__name__)
 
 
+#: Shared look of a "category / section chooser" panel.
+#:
+#: The panel used to be a flat dark grey (a black overlay), which read as
+#: switched-off rather than as a sidebar.  It is now a light, slightly blue
+#: tinted surface picked up from the selection colour (#3a5f9f), so it lifts
+#: away from the window background without drawing attention to itself and
+#: stays correct under every one of the six themes - the colour is defined with
+#: alpha, so it tints whatever the theme puts behind it instead of fighting it.
+CATEGORY_PANEL_STYLE = (
+    "QFrame#categoryContainer {"
+    "  background-color: rgba(122, 162, 224, 28);"
+    "  border: 1px solid rgba(122, 162, 224, 70);"
+    "  border-radius: 6px;"
+    "}"
+)
+
+#: Matching list style for the items inside such a panel.
+CATEGORY_LIST_STYLE = (
+    "QListWidget { border: none; background: transparent; font-size: 13px; }"
+    "QListWidget::item { padding: 8px 12px; margin: 1px 0; }"
+    "QListWidget::item:hover { background: rgba(122, 162, 224, 55);"
+    "  border-radius: 4px; }"
+    "QListWidget::item:selected { background: #3a5f9f; color: white;"
+    "  border-radius: 4px; }"
+)
+
+#: Caption above the list ("CATEGORIES", "OPERATIONS", ...).
+CATEGORY_CAPTION_STYLE = (
+    "font-size: 10px; font-weight: bold; color: #8fa9c8;"
+    " letter-spacing: 1px; padding: 4px 6px;"
+)
+
+
 class SettingsTab(QWidget):
     """
     Fourth tab — Application Settings.
@@ -180,34 +213,18 @@ class SettingsTab(QWidget):
         category_container = QFrame()
         category_container.setFrameShape(QFrame.Shape.StyledPanel)
         category_container.setObjectName("categoryContainer")
-        category_container.setStyleSheet(
-            "QFrame#categoryContainer {"
-            "  background-color: rgba(0, 0, 0, 40);"
-            "  border: 1px solid rgba(255, 255, 255, 40);"
-            "  border-radius: 6px;"
-            "}"
-        )
+        category_container.setStyleSheet(CATEGORY_PANEL_STYLE)
         category_layout = QVBoxLayout(category_container)
         category_layout.setContentsMargins(6, 6, 6, 6)
         category_layout.setSpacing(4)
 
         category_caption = QLabel("CATEGORIES")
-        category_caption.setStyleSheet(
-            "font-size: 10px; font-weight: bold; color: #8fa9c8;"
-            " letter-spacing: 1px; padding: 4px 6px;"
-        )
+        category_caption.setStyleSheet(CATEGORY_CAPTION_STYLE)
         category_layout.addWidget(category_caption)
 
         self._category_list = QListWidget()
         self._category_list.setMinimumWidth(150)
-        self._category_list.setStyleSheet(
-            "QListWidget { border: none; background: transparent; font-size: 13px; }"
-            "QListWidget::item { padding: 8px 12px; margin: 1px 0; }"
-            "QListWidget::item:hover { background: rgba(255, 255, 255, 25);"
-            "  border-radius: 4px; }"
-            "QListWidget::item:selected { background: #3a5f9f; color: white;"
-            "  border-radius: 4px; }"
-        )
+        self._category_list.setStyleSheet(CATEGORY_LIST_STYLE)
         for label, icon in self._CATEGORIES:
             item = QListWidgetItem(f"{icon}  {label}")
             self._category_list.addItem(item)
