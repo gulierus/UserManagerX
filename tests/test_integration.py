@@ -375,6 +375,7 @@ EXPECTED_TABS = [
     (2, "3. Operations", "operations_tab", "OperationsTab"),
     (3, "4. Settings", "settings_tab", "SettingsTab"),
     (4, "5. Logs", "log_viewer_tab", "LogViewerTab"),
+    (5, "6. Source Manager", "source_manager_tab", "SourceManagerTab"),
 ]
 
 
@@ -383,11 +384,11 @@ EXPECTED_TABS = [
 class TestMainWindow:
     """The whole application window, built for real."""
 
-    def test_the_window_builds_the_five_documented_tabs_in_order(self, window):
-        """All five tabs exist and carry their numbered captions."""
+    def test_the_window_builds_the_documented_tabs_in_order(self, window):
+        """Every documented tab exists and carries its numbered caption."""
         bar = window.tab_widget
-        assert bar.count() == 5
-        assert [bar.tabText(i) for i in range(5)] == \
+        assert bar.count() == len(EXPECTED_TABS)
+        assert [bar.tabText(i) for i in range(bar.count())] == \
             [label for _, label, _, _ in EXPECTED_TABS]
 
     @pytest.mark.parametrize("index,label,attribute,class_name", EXPECTED_TABS)
@@ -432,15 +433,16 @@ class TestMainWindow:
         assert window.minimumWidth() == 1200
         assert window.minimumHeight() == 800
 
-    def test_a_sixth_tab_added_later_is_equalised_as_well(self, window, qapp):
+    def test_a_tab_added_later_is_equalised_as_well(self, window, qapp):
         """The bar keeps its promise for tabs the window did not create."""
-        window.tab_widget.addTab(QWidget(), "6. A much longer extra caption")
+        before = window.tab_widget.count()
+        window.tab_widget.addTab(QWidget(), "A much longer extra caption")
         window.show()
         qapp.processEvents()
 
         bar = window.tab_widget.tabBar()
-        assert bar.count() == 6
-        assert len({bar.tabRect(i).width() for i in range(6)}) == 1
+        assert bar.count() == before + 1
+        assert len({bar.tabRect(i).width() for i in range(bar.count())}) == 1
 
     def test_the_window_starts_without_any_source(self, window):
         """Nothing is loaded until the user loads it on the first tab."""

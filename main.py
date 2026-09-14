@@ -35,6 +35,7 @@ from ui.comparison_tab import ComparisonTab
 from ui.operations_tab import OperationsTab
 from ui.settings_tab import SettingsTab
 from ui.log_viewer_tab import LogViewerTab
+from ui.source_manager_tab import SourceManagerTab
 from models import SourceManager
 from utils.logging_config import setup_application_logging
 from utils.font_manager import initialize_fonts, get_font_manager
@@ -117,6 +118,7 @@ class StudentManagementSystem(QMainWindow):
             self.operations_tab = OperationsTab(self.source_manager)
             self.settings_tab = SettingsTab()
             self.log_viewer_tab = LogViewerTab()
+            self.source_manager_tab = SourceManagerTab(self.source_manager)
             
             # Add tabs
             self.tab_widget.addTab(self.source_selection_tab, "1. Data Sources")
@@ -124,6 +126,10 @@ class StudentManagementSystem(QMainWindow):
             self.tab_widget.addTab(self.operations_tab, "3. Operations")
             self.tab_widget.addTab(self.settings_tab, "4. Settings")
             self.tab_widget.addTab(self.log_viewer_tab, "5. Logs")
+            # Appended rather than inserted next to "1. Data Sources" so the
+            # numbering the rest of the application (and its documentation)
+            # refers to stays stable.
+            self.tab_widget.addTab(self.source_manager_tab, "6. Source Manager")
             
             logger.info("All tabs created successfully")
 
