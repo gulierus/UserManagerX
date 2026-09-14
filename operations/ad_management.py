@@ -31,6 +31,7 @@ from ui.group_management_dialog import GroupManagementDialog, show_group_managem
 from ui.password_policy_dialog import PasswordPolicyDialog
 from ui.username_policy_dialog import UsernamePolicyDialog
 from ui.home_template_dialog import HomeDirectoryTemplateDialog
+from ui.ad_analysis_dialog import ADAnalysisDialog
 
 logger = logging.getLogger(__name__)
 
@@ -1211,47 +1212,41 @@ class ADManagementWidget(QWidget):
         self.refresh_person_table()
     
     def analyze_source(self):
-        """Analyze source for issues"""
+        """
+        Analyse the source and show the result in a detailed, actionable window.
+
+        This used to be a message box, which could only report *how many*
+        records had problems - not which ones - and offered no way to act on
+        them.
+        """
         if not self.current_source:
             QMessageBox.warning(self, "No Source", "Please select a source first")
             return
-        
+
         try:
             source = self.current_source
-            
+
             # Edge case: source has no get_all_persons method
             if not hasattr(source, 'get_all_persons'):
                 QMessageBox.warning(self, "Analysis Error",
                     "The selected source does not support analysis.")
                 return
-            
-            all_persons = source.get_all_persons()
-            
+
             # Edge case: empty source
-            if not all_persons:
+            if not source.get_all_persons():
                 QMessageBox.information(self, "Source Analysis",
                     "<b>Source Analysis:</b><br><br>"
                     "The source contains no persons.<br><br>"
                     "Ready for sync: ❌ No (empty source)")
                 return
-            
-            analysis = ADValidator.analyze_source(source)
-            
-            msg = (
-                f"<b>Source Analysis:</b><br><br>"
-                f"Total persons: {analysis['total_persons']}<br>"
-                f"Persons with issues: {analysis['persons_with_issues']}<br>"
-                f"Persons with errors: {analysis['persons_with_errors']}<br>"
-                f"Total errors: {analysis['total_errors']}<br>"
-                f"Total warnings: {analysis['total_warnings']}<br><br>"
-                f"Missing username: {analysis['missing_username']}<br>"
-                f"Missing password: {analysis['missing_password']}<br>"
-                f"Missing email: {analysis['missing_email']}<br><br>"
-                f"Ready for sync: {'✓ Yes' if analysis['is_ready_for_sync'] else '❌ No'}"
-            )
-            
-            QMessageBox.information(self, "Source Analysis", msg)
-            
+
+            dialog = ADAnalysisDialog(source, self)
+            dialog.exec()
+
+            if dialog.changed:
+                self.refresh_person_table()
+                self.source_manager.notify_source_modified(source.name)
+
         except AttributeError as e:
             logger.error(f"Attribute error during source analysis: {e}")
             QMessageBox.critical(self, "Analysis Error",
@@ -1260,7 +1255,7 @@ class ADManagementWidget(QWidget):
             logger.exception("Error during source analysis")
             QMessageBox.critical(self, "Analysis Error",
                 f"An unexpected error occurred during analysis:\n\n{str(e)}")
-    
+
     def discover_in_ad(self):
         """Discover which persons exist in AD"""
         if not self.current_source:

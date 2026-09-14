@@ -1021,56 +1021,138 @@ def test_report_generation_result_truncates_a_long_skip_list(widget, dialogs,
 # analyze_source
 # ===========================================================================
 
-def test_analyze_source_counts_field_identical_persons_separately(
-        widget, source_of, make_person, dialogs):
-    """Two students with identical data are two students, not one."""
+@pytest.mark.bug
+def test_analysis_lists_field_identical_persons_separately(qapp, source_of,
+                                                           make_person):
+    """Two students with identical data are two students, not one.
+
+    Person is a dataclass, so twins compare equal and are unhashable; grouping
+    the issues by value would collapse them into a single row - and putting
+    them in a set used to raise TypeError outright.
+    """
+    from ui.ad_analysis_dialog import ADAnalysisDialog
+
     twins = [make_person("Jan", "Novák", "6.A"),
              make_person("Jan", "Novák", "6.A")]
     assert twins[0] == twins[1]
-    widget.set_source(source_of(twins))
+    dialog = ADAnalysisDialog(source_of(twins))
+
+    assert dialog._table.rowCount() == 2
+    assert "2</b> with problems" in dialog._summary_label.text()
+
+    # ...and fixing them must give each its own user name
+    dialog.fix_all()
+    assert twins[0].ad_username != twins[1].ad_username
+
+
+def test_analyze_source_opens_the_detailed_dialog(widget, source_of, make_person,
+                                                 monkeypatch, dialogs):
+    """The analysis is a resizable, actionable window - not a message box."""
+    opened = {}
+
+    class FakeDialog:
+        def __init__(self, source, parent=None):
+            opened["source"] = source
+            self.changed = False
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr("operations.ad_management.ADAnalysisDialog", FakeDialog)
+    source = source_of([make_person("Jan", "Novák", "6.A")])
+    widget.set_source(source)
+
+    widget.analyze_source()
+
+    assert opened["source"] is source
+
+
+def test_analyze_source_still_reports_an_empty_source(widget, source_of, dialogs):
+    """An empty source needs no table - the message box is still right there."""
+    widget.set_source(source_of([]))
     dialogs.clear()
 
     widget.analyze_source()
 
-    assert dialogs.kinds() == ["information"]
-    assert dialogs.saw("Total persons: 2")
-    assert dialogs.saw("Persons with issues: 2")
-    assert dialogs.saw("Persons with errors: 2")
+    assert dialogs.saw("contains no persons")
 
 
-def test_analyze_source_counts_the_missing_properties(widget, source_of,
-                                                      make_person, dialogs):
-    """Missing user name / password / e-mail are counted individually."""
-    persons = [
-        make_person("Jan", "Novák", "6.A", ad_username="novakjan",
-                    ad_password="Str0ng!pass", ad_email="j@skola.cz",
-                    ad_display_name="Jan Novák (6.A)"),
-        make_person("Eva", "Malá", "6.A"),
-    ]
-    widget.set_source(source_of(persons))
-    dialogs.clear()
+def test_analysis_dialog_lists_only_persons_with_problems(qapp, source_of,
+                                                          make_person):
+    """A complete person is not listed; an incomplete one is."""
+    from ui.ad_analysis_dialog import ADAnalysisDialog
 
-    widget.analyze_source()
+    complete = make_person("Jan", "Novák", "6.A", ad_username="novakjan",
+                           ad_password="Str0ng!pass", ad_email="j@skola.cz",
+                           ad_display_name="Jan Novák (6.A)")
+    incomplete = make_person("Eva", "Malá", "6.A")
+    dialog = ADAnalysisDialog(source_of([complete, incomplete]))
 
-    assert dialogs.saw("Missing username: 1")
-    assert dialogs.saw("Missing password: 1")
-    assert dialogs.saw("Missing email: 1")
-    assert dialogs.saw("Ready for sync: ❌ No")
+    names = [dialog._table.item(row, 0).text()
+             for row in range(dialog._table.rowCount())]
+    assert names == ["Eva Malá"]
+    assert "1</b> with problems" in dialog._summary_label.text()
 
 
-def test_analyze_source_reports_a_ready_source(widget, source_of, make_person,
-                                               dialogs):
-    """A complete source is announced as ready for synchronisation."""
-    widget.set_source(source_of([
-        make_person("Jan", "Novák", "6.A", ad_username="novakjan",
-                    ad_password="Str0ng!pass", ad_email="j@skola.cz",
-                    ad_display_name="Jan Novák (6.A)")]))
-    dialogs.clear()
+def test_analysis_dialog_highlights_the_offending_cells(qapp, source_of,
+                                                        make_person):
+    """The cell that is wrong is coloured, the ones that are fine are not."""
+    from ui.ad_analysis_dialog import ADAnalysisDialog, ERROR_COLOR
 
-    widget.analyze_source()
+    dialog = ADAnalysisDialog(source_of([make_person("Eva", "Malá", "6.A")]))
 
-    assert dialogs.saw("Ready for sync: ✓ Yes")
+    # column 2 is the user name, which is missing -> error colour
+    assert dialog._table.item(0, 2).background().color() == ERROR_COLOR
+    # column 1 is the class, which is present -> untouched
+    assert dialog._table.item(0, 1).background().color() != ERROR_COLOR
 
+
+def test_analysis_dialog_fixes_one_person(qapp, source_of, make_person):
+    """The per-row Fix button fills in what can be generated."""
+    from ui.ad_analysis_dialog import ADAnalysisDialog
+
+    person = make_person("Eva", "Malá", "6.A")
+    dialog = ADAnalysisDialog(source_of([person]))
+
+    dialog.fix_person(person)
+
+    assert person.ad_username
+    assert person.ad_password
+    assert person.ad_display_name
+    assert dialog.changed is True
+    assert dialog._table.rowCount() == 0
+
+
+def test_analysis_dialog_fixes_every_listed_person(qapp, source_of, make_person):
+    """Fix All repairs everything that can be repaired."""
+    from ui.ad_analysis_dialog import ADAnalysisDialog
+
+    people = [make_person("Eva", "Malá", "6.A"),
+              make_person("Jan", "Novák", "7.B")]
+    dialog = ADAnalysisDialog(source_of(people))
+
+    dialog.fix_all()
+
+    assert all(p.ad_username and p.ad_password for p in people)
+    assert len({p.ad_username for p in people}) == 2, "user names must be unique"
+    assert dialog._table.rowCount() == 0
+
+
+def test_analysis_dialog_never_invents_a_missing_surname(qapp, source_of,
+                                                         make_person):
+    """A name only a human can supply is reported, never generated."""
+    from ui.ad_analysis_dialog import ADAnalysisDialog
+
+    person = make_person("Madonna", "", "6.A")
+    dialog = ADAnalysisDialog(source_of([person]))
+
+    dialog.fix_person(person)
+
+    assert person.ad_username is None
+    assert person.last_name == ""
+    assert "missing last name" in dialog._status_label.text()
+    # still listed, because the problem is still there
+    assert dialog._table.rowCount() == 1
 
 def test_analyze_source_without_a_source_warns(widget, dialogs):
     """Analysis needs a source and says so."""
