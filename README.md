@@ -12,9 +12,9 @@ Built with **Python 3** and **PyQt6**.
 
 | Tab | Purpose |
 |---|---|
-| **1. Data Sources** | Load students from EduPage (with 2FA), from an encrypted file, or from Active Directory |
+| **1. Data Sources** | Load students from EduPage (with 2FA), from an encrypted file, from Active Directory, or from Microsoft 365 |
 | **2. Comparison and Sync** | Compare two sources side by side, analyse and repair the data, shift class years, convert class numerals, merge sources |
-| **3. Operations** | Active Directory management (credentials, groups, synchronisation), encrypted PDF export, encrypted JSON export |
+| **3. Operations** | Active Directory management (credentials, groups, synchronisation), Microsoft 365 management, encrypted PDF export, encrypted JSON export |
 | **4. Settings** | Appearance, logging configuration, general options |
 | **5. Logs** | Live log view and historical log files |
 

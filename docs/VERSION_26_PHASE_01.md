@@ -777,6 +777,179 @@ A unit named `A)(objectClass=*` cannot break out of the filter it is placed in.
 
 ---
 
+## 21) Microsoft 365
+
+Every question this point asks is answered in
+**`docs/VERSION_26_POINT_21_ANALYSIS.md`** — the library choice, the honest
+answer about 2FA, the source origin fields, the Active Directory OU mapping,
+how group owners are set, and exactly what a remote password reset requires.
+What follows is what was *built*.
+
+> **Blocked: 21 c and 21 d.** `main.cs` arrived cut off at 50 000 characters,
+> in the middle of the comment that introduces the export/import data model.
+> `GroupExporter`, `AdvancedGroupExporter` (which holds
+> `ExportGroupsInteractiveAsync`, named explicitly by 21 d), `GroupImporter`,
+> `PasswordManager`, `TeamCreator` and `GroupSearchEngine` never arrived. The
+> file formats those define cannot be guessed. See the analysis document.
+
+### The foundation
+
+| File | What it is |
+|---|---|
+| `services/graph_compat.py` | `msgraph-sdk` and `azure-identity` as **optional** dependencies, exactly as `services/ldap_compat.py` treats `ldap3`. A user who only exports PDFs is not stopped at start-up by a `ModuleNotFoundError` — that already happened once with `ldap3` (version 24, point E03). |
+| `models_m365.py` | `M365Group`, `M365Team`, `M365Member`, `M365GroupSelection`, `M365Status`. |
+| `utils/name_templates.py` | The template engine behind every generated name. |
+| `services/m365_auth.py` | The three sign-in methods. |
+| `services/m365_client.py` | A synchronous wrapper around the asynchronous Graph SDK. |
+
+**Dedicated classes, as the point requires.** A Microsoft 365 group is not a
+school class: it has an object id, a mail nickname, a visibility, owners *and*
+members, and it may or may not have a team. `M365Team` is a specialisation of
+`M365Group` rather than a separate type, because that is what it is in the
+directory — same id, team features on top. A `Class` is built **from** one of
+them only in step 2 of the wizard.
+
+**One detail worth naming:** `M365Group.members_loaded`. An empty member list
+means "no members" *only once they have been read*; before that it means "not
+read yet", and the wizard says so rather than displaying a confident `0`.
+
+### The template engine
+
+Both new names — the class name in step 2 and the group name during
+synchronisation — need more than whole-field substitution. The point asks that
+"the placeholder also supports extracting specific parts of the given field",
+and a group called `Trida-6.A-2020` has to be able to yield `6.A`:
+
+| Written | Result |
+|---|---|
+| `{display_name}` | `Trida-6.A-2020` |
+| `{display_name[6:9]}` | `6.A` |
+| `{display_name\|after:Trida-\|before:-2020}` | `6.A` |
+| `{display_name\|match:\d+\.[A-Z]}` | `6.A` |
+| `{display_name\|digits}` | `62020` |
+| `{last_name\|ascii\|lower\|alnum}{first_name[0]\|ascii\|lower}@{domain}` | `krizovaz@skola.cz` |
+
+Operations chain left to right; slices use Python's own semantics, negative
+indices included, and never raise on a short value. The engine knows nothing
+about Microsoft 365 — the callers supply a plain `field -> value` dictionary,
+which is what makes it testable on its own and reusable.
+
+### 21 a) "Microsoft 365 From Web"
+
+1. **Sign in.** `ui/m365_connection_widget.py`, shared with the operation, so
+   the two cannot drift apart. It shows only the fields the chosen method uses
+   and states that method's limitation **before** the user tries it.
+2. **Read the tenant.** `M365LoadGroupsTask` signs in and reads every group
+   with its owners and members, in a worker thread, behind the progress
+   dialog, cancellable, reporting per group. A group the account cannot see is
+   logged and skipped — one unreadable group must not lose the other 299.
+3. **Choose.** Step 1: the list on the left with a search box (name, alias,
+   description and email), *Select all shown*, *Clear selection*, and the
+   clicked group's owners, members and facts on the right.
+4. **Name.** Step 2: one row per group, named by hand or from a template with
+   a live preview. Empty and duplicate names are refused — two classes with one
+   name are indistinguishable everywhere the application looks a class up.
+5. **Build.** A read-only source, with the tenant, the sign-in method and the
+   account recorded in `source_info` (**never** a secret). The enrollment years
+   are calculated automatically, because `SourceManager.add_source()` does that
+   for every source whatever loaded it.
+
+*Select all shown* and *Clear selection* are deliberately **not** symmetrical:
+"all shown" respects the search, while "clear" clears everything including
+hidden rows — a user who clears the selection means all of it, and leaving
+invisible ticks behind would carry hidden choices into step 2.
+
+### 21 e) "Microsoft 365 Management"
+
+The same shape as "Active Directory Management": a connection panel, an
+Operations section, a table with `Columns...` and an Edit button per row, and
+**Status** and **Dirty** columns that mean there what they mean in the other
+operation.
+
+**It shows only Microsoft 365 fields.** No Active Directory display name, no
+home directory, no "Cannot Change Pwd" — as the point requires, and for a
+reason: a person can be in both directories with different values, and mixing
+them in one table is how they get confused. `Person` therefore gained its own
+Microsoft 365 fields, its own status, and its own "status before the edit", so
+that editing `ad_email` moves only the Active Directory status, editing
+`m365_display_name` moves only the Microsoft 365 one, and editing a *name*
+moves both.
+
+**The synchronisation maps a class onto a group**, not onto an organisational
+unit — Microsoft 365 has no such tree. The group name is a template the user
+controls, a missing group is created, an existing one is reused, and
+membership is what says which class somebody is in. **A team is created only
+when the switch is on**, which the point is explicit about.
+
+**The four settings windows** (`Formats…`): sign-in name, display name,
+password and group name. The three name formats share one dialog with a live
+preview against a Czech example, and its OK button stays disabled while the
+template cannot work. The password format reuses the application's own
+password policy dialog rather than inventing a second one.
+
+**Bulk Edit** sets fields for several people at once, including **one password
+for a whole class** or a different one each. Every field has its own tick box
+and an unticked field is not written — version 24's bulk edit applied whatever
+the widgets happened to hold and silently blanked fields nobody had touched
+(point E05).
+
+### Two bugs found while building this
+
+* **A group ticked in step 1 after another had already been named came back
+  with no class name at all.** The template was applied only when nothing was
+  remembered, so a second visit to step 1 left the new group blank. It now
+  fills the blanks and leaves typed names alone, while *Apply to all* still
+  means all.
+* **`Trida-{grade}` renders perfectly well as `Trida-` for a class called
+  "Zaci"** — and every such class would map to that one group.
+  `empty_placeholders()` now reports a placeholder that resolved to nothing,
+  and the plan refuses the class instead of creating a nonsense group. The same
+  check stops `@skola.cz` being accepted as a sign-in name.
+
+There was also a third, in code this point merely made reachable:
+`OperationsTab.on_operation_changed()` logged the operation's name from a
+second, hard-coded list of three. Adding a fourth operation made selecting it
+raise `IndexError` **inside a Qt slot** — which makes PyQt6 call `qFatal()` and
+abort the whole application, exactly the failure mode of point 25. It now reads
+from the one list that decides both the combo and the stack.
+
+---
+
+## 22) The Microsoft 365 fields in the PDF export
+
+**Change.** `_person_to_dict()` exports six more fields — sign-in name,
+password, display name, alias, usage location and status.
+
+**They are available but hidden by default.** A PDF is how credentials are
+handed out, so the Microsoft 365 password belongs in it; but a school that does
+not use Microsoft 365 should not be handed six empty columns squeezing the ones
+that matter. `DEFAULT_HIDDEN_COLUMNS` keeps them off the sheet until the user
+switches them on in `Columns...`.
+
+The status is exported as its **label** (*Synchronised*, *Not in Microsoft
+365*) rather than its internal value, for the same reason the Active Directory
+status is (point 18).
+
+---
+
+## 23) The Microsoft 365 fields in the JSON export
+
+**Change.** `person_to_dict()` / `person_from_dict()` write and read the six
+fields plus the status.
+
+Three details that matter for files:
+
+* **Stored separately from the Active Directory fields**, because they are
+  separate. `ad_display_name` and `m365_display_name` are two different values
+  about two different directories, and folding them together would lose one.
+* **The status is written as text**, which is what JSON can express, and read
+  back with `M365Status.from_value()`.
+* **Nothing breaks on an older or a newer file.** A file written before this
+  version simply lacks the keys and gets the defaults; a status this version
+  does not recognise becomes *Not checked* rather than refusing to load.
+
+---
+
 ## 25) Intermittent freeze and crash when synchronising *(high priority)*
 
 **Cause — proven, not guessed.** The stack in the report is the whole story:
@@ -909,6 +1082,21 @@ either one twice suggests `... (2)`.
 | `utils/enrollment_task.py` | background enrollment-year tasks (13) |
 | `services/ad_comparison.py` | comparing a person with the discovered AD values (18, 19) |
 | `ui/ad_difference_view.py` | the outlines, the popup and the shared switch (19 b) |
+| `models_m365.py` | Microsoft 365 groups, teams, members and status (21) |
+| `services/graph_compat.py` | the Graph SDK as an optional dependency (21) |
+| `services/m365_auth.py` | the three sign-in methods (21 a) |
+| `services/m365_client.py` | a synchronous wrapper around the Graph SDK (21) |
+| `services/m365_comparison.py` | comparing a person with their Microsoft 365 account (21 e) |
+| `services/m365_services.py` | Microsoft 365 discovery and synchronisation (21 e) |
+| `sources/m365_source.py` | the "Microsoft 365 From Web" source (21 a) |
+| `operations/m365_management.py` | the "Microsoft 365 Management" operation (21 e) |
+| `ui/m365_connection_widget.py` | the sign-in panel, shared by both (21) |
+| `ui/m365_import_wizard.py` | the two-step group-to-class wizard (21 a) |
+| `ui/m365_format_dialog.py` | the three name-format windows (21 e) |
+| `ui/m365_person_dialog.py` | one person's Microsoft 365 fields (21 e) |
+| `ui/m365_bulk_edit_dialog.py` | Microsoft 365 fields for several people (21 e) |
+| `utils/m365_tasks.py` | the Microsoft 365 background tasks (21) |
+| `utils/name_templates.py` | name templates with field extraction (21) |
 | `utils/ad_entry_mapping.py` | which AD attributes are read, and how they become a person (20) |
 | `utils/source_naming.py` | readable default names for sources (26) |
 | `tests/test_source_combo.py` | 43 tests for the labelling and the Settings switch |
@@ -924,7 +1112,8 @@ either one twice suggests `... (2)`.
 
 ## Still open
 
-Points **21**, **22** and **23** are not part of this phase yet. Point 21 is
-blocked - see the note in the reply about the truncated `main.cs` - and 22/23
-describe exports of the Microsoft 365 fields that point 21 would introduce. Point 21 in particular is blocked — see the note in the reply
+**21 c** ("Microsoft 365 From File") and **21 d** (the export operation) are
+blocked on the truncated `main.cs`; everything else in this request is done.
+See `docs/VERSION_26_POINT_21_ANALYSIS.md` for exactly what is missing and what
+would unblock it. Point 21 in particular is blocked — see the note in the reply
 about the truncated `main.cs`.
