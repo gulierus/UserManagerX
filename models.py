@@ -15,15 +15,142 @@ from PyQt6.QtCore import QObject, pyqtSignal
 logger = logging.getLogger(__name__)
 
 
+#: Values written by earlier versions of the application, mapped onto the
+#: members of :class:`ADStatus`.
+#:
+#: ``create_pending`` was never assigned anywhere, so it could only ever mean
+#: "nothing is known".  ``exists_in_ad`` said only that an account was found
+#: and nothing about whether the values agreed; it is read back as "differs",
+#: because that is the interpretation that cannot cause a difference to be
+#: missed.
+#:
+#: Defined at module level on purpose: a plain dictionary inside an ``Enum``
+#: body becomes a member of the enumeration.
+LEGACY_AD_STATUS_VALUES = {
+    "not_in_ad": "not_found_in_ad",
+    "exists_in_ad": "differs_from_ad",
+    "create_pending": "unknown",
+    "update_pending": "differs_from_ad",
+    "synced": "sync_succeeded",
+    "ambiguous": "multiple_ad_matches",
+}
+
+
 class ADStatus(Enum):
-    """Active Directory synchronization status"""
+    """
+    What is known about a person's Active Directory account.
+
+    The members answer exactly one question each, so a status can never mean
+    two things at once:
+
+    ========================  ==================================================
+    Member                    Meaning
+    ========================  ==================================================
+    ``UNKNOWN``               Nothing has been looked up yet.
+    ``NOT_FOUND_IN_AD``       Searched for, not present in the searched area.
+    ``MULTIPLE_AD_MATCHES``   Several accounts match - we do not know which one.
+    ``MATCHES_AD``            Found, and every comparable field is identical.
+    ``DIFFERS_FROM_AD``       Found, but at least one field differs.
+    ``SYNC_SUCCEEDED``        Synchronisation finished with no errors.
+    ``SYNC_INCOMPLETE``       Synchronisation finished, but something failed.
+    ========================  ==================================================
+
+    The comparison behind ``MATCHES_AD`` / ``DIFFERS_FROM_AD`` is made against
+    the values "Discover in AD" read, not against the directory as it is right
+    now - see :mod:`services.ad_comparison`.
+    """
+
     UNKNOWN = "unknown"
-    NOT_IN_AD = "not_in_ad"
-    EXISTS_IN_AD = "exists_in_ad"
-    CREATE_PENDING = "create_pending"
-    UPDATE_PENDING = "update_pending"
-    SYNCED = "synced"
-    AMBIGUOUS = "ambiguous"
+    NOT_FOUND_IN_AD = "not_found_in_ad"
+    MULTIPLE_AD_MATCHES = "multiple_ad_matches"
+    MATCHES_AD = "matches_ad"
+    DIFFERS_FROM_AD = "differs_from_ad"
+    SYNC_SUCCEEDED = "sync_succeeded"
+    SYNC_INCOMPLETE = "sync_incomplete"
+
+    @classmethod
+    def from_value(cls, value) -> 'ADStatus':
+        """
+        Build a status from a stored value, accepting older spellings.
+
+        Args:
+            value: An :class:`ADStatus`, one of its values, or a value written
+                by an earlier version of the application.
+
+        Returns:
+            The matching member, or :attr:`UNKNOWN` for anything unrecognised -
+            a status that cannot be read must not stop a file from loading.
+        """
+        if isinstance(value, cls):
+            return value
+
+        text = str(value or "").strip().lower()
+        if not text:
+            return cls.UNKNOWN
+
+        try:
+            return cls(text)
+        except ValueError:
+            pass
+
+        legacy = LEGACY_AD_STATUS_VALUES.get(text)
+        if legacy:
+            return cls(legacy)
+
+        logger.debug("Unknown AD status %r - treating it as unknown", value)
+        return cls.UNKNOWN
+
+    @property
+    def label(self) -> str:
+        """Short text for a table cell."""
+        return {
+            ADStatus.UNKNOWN: "Not checked",
+            ADStatus.NOT_FOUND_IN_AD: "Not in AD",
+            ADStatus.MULTIPLE_AD_MATCHES: "Several matches",
+            ADStatus.MATCHES_AD: "Identical",
+            ADStatus.DIFFERS_FROM_AD: "Differs",
+            ADStatus.SYNC_SUCCEEDED: "Synchronised",
+            ADStatus.SYNC_INCOMPLETE: "Synchronised with errors",
+        }[self]
+
+    @property
+    def description(self) -> str:
+        """Full sentence for a tooltip."""
+        return {
+            ADStatus.UNKNOWN:
+                "Active Directory has not been asked about this person yet. "
+                "Press 'Discover in AD'.",
+            ADStatus.NOT_FOUND_IN_AD:
+                "This person was not found in the searched area of Active "
+                "Directory. Synchronising will create the account.",
+            ADStatus.MULTIPLE_AD_MATCHES:
+                "Several Active Directory accounts match this person, so it is "
+                "not clear which one is hers. She is left out of the "
+                "synchronisation until the ambiguity is resolved.",
+            ADStatus.MATCHES_AD:
+                "Found in Active Directory, and every field the application "
+                "manages holds the same value on both sides.",
+            ADStatus.DIFFERS_FROM_AD:
+                "Found in Active Directory, but at least one field differs "
+                "from what Active Directory held when it was discovered.",
+            ADStatus.SYNC_SUCCEEDED:
+                "The last synchronisation of this person finished with no "
+                "errors.",
+            ADStatus.SYNC_INCOMPLETE:
+                "The last synchronisation of this person finished, but one or "
+                "more steps failed. See the log for what did not apply.",
+        }[self]
+
+    @property
+    def is_in_ad(self) -> bool:
+        """True when an account for this person is known to exist."""
+        return self in (ADStatus.MATCHES_AD, ADStatus.DIFFERS_FROM_AD,
+                        ADStatus.SYNC_SUCCEEDED, ADStatus.SYNC_INCOMPLETE)
+
+    @property
+    def is_settled(self) -> bool:
+        """True when nothing is known to be waiting to be written to AD."""
+        return self in (ADStatus.MATCHES_AD, ADStatus.SYNC_SUCCEEDED)
 
 
 class VerificationStatus(Enum):
@@ -256,6 +383,9 @@ class Person:
     _original_values: Dict[str, Any] = field(default_factory=dict, repr=False)
     _dirty_fields: Set[str] = field(default_factory=set, repr=False)
     _tracking_enabled: bool = field(default=True, repr=False)
+    #: The status held before the first local edit, so undoing every edit can
+    #: restore it instead of guessing between "Identical" and "Synchronised".
+    _status_before_edit: Optional['ADStatus'] = field(default=None, repr=False)
     
     def __init__(self, first_name: str, last_name: str, class_name: str,
                  ad_username: Optional[str] = None,
@@ -280,6 +410,7 @@ class Person:
         # Initialize tracking fields first
         self._original_values = {}
         self._dirty_fields = set()
+        self._status_before_edit = None
         self._tracking_enabled = False  # Disable during initialization
         
         # Set values without triggering dirty tracking
@@ -555,38 +686,51 @@ class Person:
             self._account_enabled = value
     
     def _mark_dirty(self, field_name: str):
-        """Internal method to mark a field as dirty"""
+        """
+        Record that a field was edited, and keep the AD status in step.
+
+        Editing a person who agreed with Active Directory makes her differ
+        from it; undoing every edit makes her agree again.  The status she had
+        before the first edit is remembered, so undoing the change restores
+        "Identical" or "Synchronised" - whichever it actually was - instead of
+        collapsing both into one.
+        """
         original_value = self._original_values.get(field_name)
         current_value = getattr(self, f"_{field_name}", None)
-        
+
         if field_name == 'group_memberships':
             if original_value is None:
                 original_dns = set()
             else:
                 original_dns = set(g.dn.lower() for g in original_value)
             current_dns = set(g.dn.lower() for g in current_value) if current_value else set()
-            
-            if current_dns != original_dns:
-                self._dirty_fields.add(field_name)
-                if self.ad_status == ADStatus.SYNCED:
-                    self.ad_status = ADStatus.UPDATE_PENDING
-            else:
-                # Undoing a group change must clear the pending state again,
-                # exactly like every other field does below.  Without this a
-                # person whose group edit was reverted stayed UPDATE_PENDING
-                # for ever and was re-sent to AD on every synchronisation.
-                self._dirty_fields.discard(field_name)
-                if not self._dirty_fields and self.ad_status == ADStatus.UPDATE_PENDING:
-                    self.ad_status = ADStatus.SYNCED
+            changed = current_dns != original_dns
         else:
-            if current_value != original_value:
-                self._dirty_fields.add(field_name)
-                if self.ad_status == ADStatus.SYNCED:
-                    self.ad_status = ADStatus.UPDATE_PENDING
-            else:
-                self._dirty_fields.discard(field_name)
-                if not self._dirty_fields and self.ad_status == ADStatus.UPDATE_PENDING:
-                    self.ad_status = ADStatus.SYNCED
+            changed = current_value != original_value
+
+        if changed:
+            self._dirty_fields.add(field_name)
+            self._note_local_change()
+        else:
+            # Undoing a change must clear the pending state again.  Without
+            # this, a person whose edit was reverted stayed "differs" for ever
+            # and was re-sent to AD on every synchronisation.
+            self._dirty_fields.discard(field_name)
+            if not self._dirty_fields:
+                self._note_local_change_undone()
+
+    def _note_local_change(self) -> None:
+        """A field was edited: the person no longer agrees with the directory."""
+        if self.ad_status.is_settled:
+            self._status_before_edit = self.ad_status
+            self.ad_status = ADStatus.DIFFERS_FROM_AD
+
+    def _note_local_change_undone(self) -> None:
+        """Every edit was undone: go back to the status held before them."""
+        if (self.ad_status is ADStatus.DIFFERS_FROM_AD
+                and self._status_before_edit is not None):
+            self.ad_status = self._status_before_edit
+            self._status_before_edit = None
     
     def _capture_original_values(self):
         """Capture current state as original values"""
@@ -631,10 +775,16 @@ class Person:
         return changes
     
     def reset_dirty(self):
-        """Clear dirty tracking after successful sync"""
+        """
+        Clear dirty tracking after a successful synchronisation.
+
+        The person now holds what was written to the directory, so the state
+        she had before the edits is no longer relevant.
+        """
         self._capture_original_values()
+        self._status_before_edit = None
         if self._ad_dn:
-            self.ad_status = ADStatus.SYNCED
+            self.ad_status = ADStatus.SYNC_SUCCEEDED
             self.ad_last_sync = datetime.now()
     
     def get_normalized_name(self) -> tuple:

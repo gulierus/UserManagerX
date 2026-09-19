@@ -394,6 +394,96 @@ per line, for when the exact group matters.
 
 ---
 
+## 18) `ADStatus` — one member, one meaning
+
+### Table 1 — what the members meant **before** the change
+
+| Member | Where it was set | What it meant | Problem |
+|---|---|---|---|
+| `UNKNOWN` | the default on every new `Person` | nothing has been looked up | — |
+| `NOT_IN_AD` | discovery, no match | not found in the searched area | — |
+| `EXISTS_IN_AD` | discovery, exactly one match; **and** immediately after `create_user()` succeeded | "an account was found" — and nothing at all about whether the values agreed | covers **two** of the required situations (c and d) and could not tell them apart |
+| `CREATE_PENDING` | **nowhere** | — | dead: no code path ever assigned it, so it could only ever appear in a file written by hand |
+| `UPDATE_PENDING` | a local edit of a person who was `SYNCED`; **and** after a synchronisation in which one or more steps failed | "there is something to write" **or** "the write partly failed" | covers **two** unrelated situations — a pending local edit and a failed synchronisation |
+| `SYNCED` | after a fully successful create/update; and by `reset_dirty()` | the last synchronisation succeeded | — |
+| `AMBIGUOUS` | discovery, more than one match by username | several accounts match | correct, but the name says nothing about *what* is ambiguous |
+
+**Answer to 18 g — what `AMBIGUOUS` meant and whether to keep it.** It was set
+in exactly one place: discovery searched by `sAMAccountName` and got **more
+than one** account back. It is read in exactly one place, `create_sync_plan()`,
+which leaves that person out of the plan entirely:
+
+```python
+if person.ad_status == ADStatus.AMBIGUOUS:
+    # Several AD accounts match this person, so we do not know which one is
+    # hers.  Creating a user would add yet another duplicate ...
+    continue
+```
+
+**It is kept.** Removing it would leave two choices, both bad: treat the person
+as found (and write to an account that may belong to somebody else) or treat
+her as not found (and create a *third* duplicate account). It was renamed to
+`MULTIPLE_AD_MATCHES`, which says what is actually ambiguous.
+
+### Table 2 — what the members mean **after** the change
+
+| Member | Shown as | Set when | Means |
+|---|---|---|---|
+| `UNKNOWN` | *Not checked* | the default on a new person; a status that cannot be read back | a) Active Directory has not been asked about this person yet |
+| `NOT_FOUND_IN_AD` | *Not in AD* | discovery finished with no match | b) not present in the **searched area** — a narrower search scope can produce this for a person who does exist elsewhere |
+| `DIFFERS_FROM_AD` | *Differs* | discovery found exactly one account **and** `compare_person_with_ad()` reported at least one difference; a field is edited on a person who was settled; the account has just been created and the remaining steps have not run yet | c) found, and at least one field differs from what AD held at discovery |
+| `MATCHES_AD` | *Identical* | discovery found exactly one account **and** the comparison found nothing; every local edit is undone on a person who was `MATCHES_AD` | d) found, and every comparable field is identical |
+| `SYNC_SUCCEEDED` | *Synchronised* | a create or update finished with an empty failure list; `reset_dirty()` on a person who has a DN | e) the last synchronisation finished with no errors |
+| `SYNC_INCOMPLETE` | *Synchronised with errors* | a create or update finished with a non-empty failure list (the password, the account flags, the groups or the home directory did not apply) | f) the synchronisation ran, but one or more steps failed |
+| `MULTIPLE_AD_MATCHES` | *Several matches* | discovery matched more than one account | g) we do not know which account is hers; she is left out of every synchronisation until this is resolved |
+
+### What had to change for the table to be true
+
+Renaming was the smaller half. `MATCHES_AD` and `DIFFERS_FROM_AD` are a promise
+that the two sides were actually compared, and nothing in the application did
+that. A new module, `services/ad_comparison.py`, now does:
+
+* It knows which person fields exist in the directory
+  (`FIELD_TO_AD_ATTRIBUTE`) — nine of them, from the first name to the group
+  list. The password is deliberately absent: Active Directory never gives one
+  back. The class name is absent too: it is a position in the tree, not an
+  attribute.
+* It compares tolerantly, so the status does not flicker on noise. `None`, `""`
+  and a missing attribute all mean "not set"; surrounding whitespace is
+  ignored; a single-valued attribute returned as a one-item list still matches;
+  and groups are compared as a **set of DNs, case-insensitively**, because the
+  order a directory lists them in is meaningless.
+* It stores the result on the person (`metadata['ad_differences']`) as plain
+  dictionaries, so the comparison survives to be painted by the table — and so
+  `metadata` stays made of simple types, because it is copied and serialised
+  elsewhere.
+
+`_refresh_ad_state()`, which re-reads an account after writing to it, now
+refreshes the comparison as well; otherwise the table would keep marking the
+fields the synchronisation had just brought into agreement.
+
+### Other consequences
+
+* **The status column shows the label, not the raw value.** *Identical*,
+  *Differs*, *Synchronised with errors* — with the full sentence in the cell's
+  tooltip. The colours were extended to all seven states (green: nothing to do,
+  amber: something outstanding, orange-red: partly failed, red: missing,
+  purple: ambiguous).
+* **The PDF export prints the label too.** `synced` became *Synchronised*: a
+  PDF is read by a person.
+* **Undoing an edit restores the right status.** Editing a person who was
+  *Identical* makes her *Differs*; undoing every edit puts her back to
+  *Identical*, and a person who was *Synchronised* goes back to
+  *Synchronised* — the status held before the first edit is remembered rather
+  than guessed.
+* **Old values still load.** `ADStatus.from_value()` maps every value an
+  earlier version wrote onto a current member, and anything unrecognised
+  becomes `UNKNOWN` — a status that cannot be read must not stop a file from
+  loading. `exists_in_ad` is read back as `DIFFERS_FROM_AD`, because that is
+  the reading that cannot cause a real difference to be missed.
+
+---
+
 ## 20) Which fields the Active Directory *source* loads
 
 **Question: when data is loaded from Active Directory on the "1. Data Sources"
@@ -662,17 +752,21 @@ either one twice suggests `... (2)`.
 | `ui/equal_width_tab_bar.py` | the tab bar extracted from `main.py` (02) |
 | `ui/source_combo.py` | read-only / editable labelling of source combos (05) |
 | `utils/enrollment_task.py` | background enrollment-year tasks (13) |
+| `services/ad_comparison.py` | comparing a person with the discovered AD values (18, 19) |
 | `utils/ad_entry_mapping.py` | which AD attributes are read, and how they become a person (20) |
 | `utils/source_naming.py` | readable default names for sources (26) |
 | `tests/test_source_combo.py` | 43 tests for the labelling and the Settings switch |
 | `tests/test_source_naming.py` | 28 tests for the name builder and the deduplicator |
 | `tests/test_ad_entry_mapping.py` | 43 tests for the attribute request and the mapping |
 | `tests/test_ad_search_scope.py` | 62 tests for the search scope, which had none before |
+| `tests/test_ad_status.py` | 71 tests pinning every meaning in table 2 |
+| `tests/test_ad_comparison.py` | 36 tests for the field-by-field comparison |
+| `tests/test_ad_discovery.py` | 21 tests for discovery, which had none before |
 
 ---
 
 ## Still open
 
-Points **18**, **19**, **21**, **22** and **23** are not part of this phase
-yet. Point 21 in particular is blocked — see the note in the reply
+Point **19 a** is done (discovery now reads every field). Points **19 b**,
+**21**, **22** and **23** are not part of this phase yet. Point 21 in particular is blocked — see the note in the reply
 about the truncated `main.cs`.

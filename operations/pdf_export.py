@@ -336,7 +336,9 @@ class PDFExportWidget(QWidget):
             'Must Change Password': 'Yes' if person.password_must_change else 'No',
             'Cannot Change Password': 'Yes' if person.password_cannot_change else 'No',
             'Password Never Expires': 'Yes' if person.password_never_expires else 'No',
-            'AD Status': str(person.ad_status.value),
+            # A PDF is read by a person, so the readable label goes in it
+            # rather than the internal value ('Identical', not 'matches_ad').
+            'AD Status': person.ad_status.label,
         }
         
     def _populate_table(self):

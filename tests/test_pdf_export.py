@@ -260,7 +260,7 @@ class TestPersonToDict:
             "Jan", "Novák", "6.A", ad_username="novakjan",
             ad_password="Str0ng!", ad_email="jan@skola.cz",
             ad_display_name="Jan Novák", account_enabled=True,
-            password_must_change=True, ad_status=ADStatus.SYNCED,
+            password_must_change=True, ad_status=ADStatus.SYNC_SUCCEEDED,
         )
         assert widget._person_to_dict(person) == {
             'First Name': 'Jan', 'Last Name': 'Novák', 'Class': '6.A',
@@ -268,7 +268,7 @@ class TestPersonToDict:
             'Email': 'jan@skola.cz', 'Display Name': 'Jan Novák',
             'Enabled': 'Yes', 'Must Change Password': 'Yes',
             'Cannot Change Password': 'No', 'Password Never Expires': 'No',
-            'AD Status': 'synced',
+            'AD Status': ADStatus.SYNC_SUCCEEDED.label,
         }
 
     def test_column_order_follows_the_documented_layout(self, widget, make_person):
@@ -301,11 +301,17 @@ class TestPersonToDict:
         assert (row['First Name'], row['Last Name'], row['Class']) == \
             ("Žofie", "Dvořáková", "9.Č")
 
-    def test_ad_status_is_exported_as_its_value_not_the_enum_repr(self, widget,
-                                                                 make_person):
-        """``ADStatus.SYNCED`` must read "synced", not "ADStatus.SYNCED"."""
-        person = make_person(ad_status=ADStatus.CREATE_PENDING)
-        assert widget._person_to_dict(person)['AD Status'] == 'create_pending'
+    def test_ad_status_is_exported_as_readable_text_not_the_enum_repr(
+            self, widget, make_person):
+        """A PDF is read by a person: 'Not checked', not 'ADStatus.UNKNOWN'."""
+        person = make_person(ad_status=ADStatus.UNKNOWN)
+        assert widget._person_to_dict(person)['AD Status'] == "Not checked"
+
+    @pytest.mark.parametrize("status", list(ADStatus))
+    def test_no_status_reaches_the_pdf_as_an_enum_repr(self, widget, make_person,
+                                                       status):
+        exported = widget._person_to_dict(make_person(ad_status=status))['AD Status']
+        assert "ADStatus" not in exported and exported
 
 
 # ===========================================================================

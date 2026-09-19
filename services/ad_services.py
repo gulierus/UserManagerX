@@ -9,6 +9,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from models import Person, Source, ADStatus
+from utils.ad_entry_mapping import PERSON_ATTRIBUTES
+from services.ad_comparison import (
+    AD_VALUES_METADATA_KEY, compare_person_with_ad, store_comparison,
+)
+
+#: Attributes every discovery and refresh asks the directory for.
+#:
+#: ``'*'`` alone is not enough to rely on: it returns the attributes the entry
+#: carries, and a server may leave constructed attributes such as ``memberOf``
+#: out of it.  Naming them explicitly is what makes "Discover in AD" fill in
+#: the display name, the email, the home directory and the group list
+#: (Version 26, point 19 a).
+AD_READ_ATTRIBUTES = list(dict.fromkeys(
+    PERSON_ATTRIBUTES + ['*', 'modifyTimestamp', 'createTimestamp']
+))
 from services.ad_group_service import ADGroupService
 from services.ldap_compat import MODIFY_REPLACE
 
@@ -251,7 +266,8 @@ class ADDiscoveryService:
         matches = []
         for search_base in self._search_bases(person, base_dn):
             try:
-                found = self.ad_client.search_users(search_base, search_filter)
+                found = self.ad_client.search_users(
+                    search_base, search_filter, attributes=AD_READ_ATTRIBUTES)
             except Exception as exc:
                 # A named OU that does not exist is normal when one template
                 # covers classes that are not all present in the directory.
@@ -283,15 +299,27 @@ class ADDiscoveryService:
                 
                 # Update person status based on discovery
                 if result.found_in_ad and not result.ambiguous:
-                    person.ad_status = ADStatus.EXISTS_IN_AD
                     person.ad_dn = result.ad_dn
                     person.ad_version = result.ad_version
-                    # Store current AD values for conflict detection
-                    person.metadata['ad_current_values'] = result.ad_attributes
+                    # Store current AD values for conflict detection and for
+                    # the field-by-field comparison below.
+                    person.metadata[AD_VALUES_METADATA_KEY] = result.ad_attributes
+
+                    # Finding the account is only half the answer: the status
+                    # has to say whether the two sides also agree.
+                    differences = store_comparison(
+                        person, compare_person_with_ad(person, result.ad_attributes))
+                    person.ad_status = (ADStatus.DIFFERS_FROM_AD if differences
+                                        else ADStatus.MATCHES_AD)
+                    if differences:
+                        logger.debug(
+                            "%s %s differs from AD in: %s",
+                            person.first_name, person.last_name,
+                            ", ".join(d.label for d in differences))
                 elif result.ambiguous:
-                    person.ad_status = ADStatus.AMBIGUOUS
+                    person.ad_status = ADStatus.MULTIPLE_AD_MATCHES
                 else:
-                    person.ad_status = ADStatus.NOT_IN_AD
+                    person.ad_status = ADStatus.NOT_FOUND_IN_AD
                     
             except Exception as e:
                 logger.exception(f"Error discovering person {person.first_name} {person.last_name}")
@@ -305,7 +333,8 @@ class ADDiscoveryService:
         # Strategy 1: Search by DN if available
         if person.ad_dn:
             try:
-                entry = self.ad_client.get_user(person.ad_dn)
+                entry = self.ad_client.get_user(person.ad_dn,
+                                                attributes=AD_READ_ATTRIBUTES)
                 if entry:
                     return DiscoveryResult(
                         person=person,
@@ -482,10 +511,12 @@ class SyncPlanner:
         
         for cls in source.classes:
             for person in cls.persons:
-                if not person.is_dirty() and person.ad_status == ADStatus.SYNCED:
-                    continue  # Nothing to do
-                
-                if person.ad_status == ADStatus.AMBIGUOUS:
+                if not person.is_dirty() and person.ad_status.is_settled:
+                    # Nothing local is waiting, and the person either matches
+                    # Active Directory or was synchronised successfully.
+                    continue
+
+                if person.ad_status == ADStatus.MULTIPLE_AD_MATCHES:
                     # Several AD accounts match this person, so we do not know
                     # which one is hers.  Creating a user would add yet another
                     # duplicate - the ambiguity has to be resolved by the user
@@ -497,7 +528,8 @@ class SyncPlanner:
                     )
                     continue
                 
-                if person.ad_status in [ADStatus.NOT_IN_AD, ADStatus.UNKNOWN] or not person.ad_dn:
+                if (person.ad_status in (ADStatus.NOT_FOUND_IN_AD, ADStatus.UNKNOWN)
+                        or not person.ad_dn):
                     # New user to create
                     if self._has_required_ad_data(person):
                         # The class name is data, not DN syntax: a comma in it
@@ -767,7 +799,8 @@ class PersonsSyncService:
             # very end, so a failing password step left the person without a
             # DN and the next synchronisation created a second account.
             person.ad_dn = dn
-            person.ad_status = ADStatus.EXISTS_IN_AD
+            # The account exists, but nothing else has been applied yet.
+            person.ad_status = ADStatus.DIFFERS_FROM_AD
 
             # --- everything that can fail on its own ------------------------
             failures.extend(self._apply_post_account_steps(person, dn))
@@ -776,7 +809,7 @@ class PersonsSyncService:
             self._refresh_ad_state(person, dn)
 
             if failures:
-                person.ad_status = ADStatus.UPDATE_PENDING
+                person.ad_status = ADStatus.SYNC_INCOMPLETE
                 return OperationResult(
                     person=person,
                     status='SUCCESS',
@@ -784,7 +817,7 @@ class PersonsSyncService:
                              + "; ".join(failures))
                 )
 
-            person.ad_status = ADStatus.SYNCED
+            person.ad_status = ADStatus.SYNC_SUCCEEDED
             person.reset_dirty()
             return OperationResult(
                 person=person,
@@ -856,12 +889,21 @@ class PersonsSyncService:
         return failures
 
     def _refresh_ad_state(self, person: Person, dn: str) -> None:
-        """Re-read the account so the conflict detector has a fresh baseline."""
+        """
+        Re-read the account after writing to it.
+
+        This gives the conflict detector a fresh baseline and, just as
+        importantly, refreshes the field-by-field comparison - otherwise the
+        table would keep outlining the fields the synchronisation has just
+        brought into agreement.
+        """
         try:
-            entry = self.ad_client.get_user(dn)
+            entry = self.ad_client.get_user(dn, attributes=AD_READ_ATTRIBUTES)
             if entry:
                 person.ad_version = entry.get('modifyTimestamp')
-                person.metadata['ad_current_values'] = entry.attributes
+                person.metadata[AD_VALUES_METADATA_KEY] = entry.attributes
+                store_comparison(
+                    person, compare_person_with_ad(person, entry.attributes))
         except Exception as exc:
             logger.warning("Could not re-read %s after the update: %s", dn, exc)
 
@@ -975,7 +1017,7 @@ class PersonsSyncService:
             self._refresh_ad_state(person, person.ad_dn)
 
             if failures:
-                person.ad_status = ADStatus.UPDATE_PENDING
+                person.ad_status = ADStatus.SYNC_INCOMPLETE
                 return OperationResult(
                     person=person,
                     status='FAILED',
@@ -983,7 +1025,7 @@ class PersonsSyncService:
                              + "; ".join(failures))
                 )
 
-            person.ad_status = ADStatus.SYNCED
+            person.ad_status = ADStatus.SYNC_SUCCEEDED
             person.reset_dirty()
             return OperationResult(
                 person=person,

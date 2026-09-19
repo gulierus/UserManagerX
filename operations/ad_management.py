@@ -37,6 +37,21 @@ from utils.ad_search_scope import OU_PLACEHOLDERS, SearchScope, SearchScopeConfi
 
 logger = logging.getLogger(__name__)
 
+#: Background colour of the "Status" cell, per status.
+#:
+#: The three tones say how much attention a row needs, not how pretty it is:
+#: green = nothing to do, amber = something is waiting or only partly done,
+#: red = a problem that stops the person from being synchronised.  A status
+#: without an entry keeps the table's own background.
+STATUS_COLORS = {
+    ADStatus.MATCHES_AD: QColor("#4CAF50"),
+    ADStatus.SYNC_SUCCEEDED: QColor("#4CAF50"),
+    ADStatus.DIFFERS_FROM_AD: QColor("#FFA726"),
+    ADStatus.SYNC_INCOMPLETE: QColor("#FF7043"),
+    ADStatus.NOT_FOUND_IN_AD: QColor("#EF5350"),
+    ADStatus.MULTIPLE_AD_MATCHES: QColor("#AB47BC"),
+}
+
 
 class ADDiscoveryThread(QThread):
     """
@@ -858,13 +873,13 @@ class ADManagementWidget(QWidget):
 
             # Status
             if "Status" in self.visible_columns:
-                status_item = QTableWidgetItem(person.ad_status.value)
-                if person.ad_status == ADStatus.SYNCED:
-                    status_item.setBackground(QColor("#4CAF50"))
-                elif person.ad_status == ADStatus.UPDATE_PENDING:
-                    status_item.setBackground(QColor("#FFA726"))
-                elif person.ad_status == ADStatus.NOT_IN_AD:
-                    status_item.setBackground(QColor("#EF5350"))
+                # The cell shows the short label; the full sentence explaining
+                # what the status means is one hover away.
+                status_item = QTableWidgetItem(person.ad_status.label)
+                status_item.setToolTip(person.ad_status.description)
+                colour = STATUS_COLORS.get(person.ad_status)
+                if colour is not None:
+                    status_item.setBackground(colour)
                 self.person_table.setItem(row, col, status_item)
                 col += 1
             

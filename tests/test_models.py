@@ -41,7 +41,7 @@ def collect(signal):
 def synced_person(**kwargs):
     """A person that AD already knows about (has a DN and SYNCED status)."""
     kwargs.setdefault("ad_dn", "CN=Jan Novak,OU=Students,DC=school,DC=local")
-    kwargs.setdefault("ad_status", ADStatus.SYNCED)
+    kwargs.setdefault("ad_status", ADStatus.SYNC_SUCCEEDED)
     return Person("Jan", "Novák", "6.A", **kwargs)
 
 
@@ -216,7 +216,7 @@ class TestPersonDirtyTracking:
         """A synced account with local edits must be re-pushed to AD."""
         person = synced_person()
         person.ad_email = "jan@school.local"
-        assert person.ad_status == ADStatus.UPDATE_PENDING
+        assert person.ad_status == ADStatus.DIFFERS_FROM_AD
 
     def test_reverting_the_last_change_restores_synced_status(self):
         """Once nothing differs any more the account is synced again."""
@@ -224,11 +224,11 @@ class TestPersonDirtyTracking:
         person.ad_email = "jan@school.local"
         person.ad_email = None
         assert person.get_dirty_fields() == set()
-        assert person.ad_status == ADStatus.SYNCED
+        assert person.ad_status == ADStatus.SYNC_SUCCEEDED
 
     @pytest.mark.parametrize("status", [
-        ADStatus.UNKNOWN, ADStatus.NOT_IN_AD, ADStatus.CREATE_PENDING,
-        ADStatus.AMBIGUOUS,
+        ADStatus.UNKNOWN, ADStatus.NOT_FOUND_IN_AD, ADStatus.UNKNOWN,
+        ADStatus.MULTIPLE_AD_MATCHES,
     ])
     def test_editing_does_not_touch_a_status_other_than_synced(self, status):
         """Only SYNCED is promoted to UPDATE_PENDING; other states are kept."""
@@ -261,21 +261,21 @@ class TestPersonDirtyTracking:
     def test_reset_dirty_clears_changes_and_stamps_the_sync(self, make_person):
         """After a successful write the person is clean, synced and timestamped."""
         person = make_person("Jan", "Novák", "6.A",
-                             ad_dn="CN=Jan,DC=school", ad_status=ADStatus.UPDATE_PENDING)
+                             ad_dn="CN=Jan,DC=school", ad_status=ADStatus.DIFFERS_FROM_AD)
         person.ad_email = "jan@school.local"
         person.reset_dirty()
         assert person.is_dirty() is False
         assert person.get_changes() == {}
-        assert person.ad_status == ADStatus.SYNCED
+        assert person.ad_status == ADStatus.SYNC_SUCCEEDED
         assert person.ad_last_sync is not None
 
     def test_reset_dirty_without_a_dn_does_not_claim_the_person_is_synced(self, make_person):
         """A person that has no DN yet was never written, so the status stays."""
-        person = make_person("Jan", "Novák", "6.A", ad_status=ADStatus.CREATE_PENDING)
+        person = make_person("Jan", "Novák", "6.A", ad_status=ADStatus.UNKNOWN)
         person.ad_email = "jan@school.local"
         person.reset_dirty()
         assert person.is_dirty() is False
-        assert person.ad_status == ADStatus.CREATE_PENDING
+        assert person.ad_status == ADStatus.UNKNOWN
         assert person.ad_last_sync is None
 
     def test_reset_dirty_rebaselines_the_original_values(self, make_person):
@@ -451,7 +451,7 @@ class TestPersonGroupMembership:
         """A group change has to be pushed to AD like any other change."""
         person = synced_person()
         person.add_to_group(group("Students"))
-        assert person.ad_status == ADStatus.UPDATE_PENDING
+        assert person.ad_status == ADStatus.DIFFERS_FROM_AD
 
     @pytest.mark.bug
     def test_undoing_a_group_change_restores_synced_status(self):
@@ -461,7 +461,7 @@ class TestPersonGroupMembership:
         person.add_to_group(students)
         person.remove_from_group(students)
         assert person.is_dirty() is False
-        assert person.ad_status == ADStatus.SYNCED
+        assert person.ad_status == ADStatus.SYNC_SUCCEEDED
 
     def test_in_place_mutation_of_the_returned_list_is_only_seen_after_marking(self, make_person):
         """The getter hands out the live list; callers must notify the model."""

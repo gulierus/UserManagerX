@@ -103,7 +103,7 @@ def loaded(widget, source_of, make_person):
     persons = [
         make_person("Zoe", "Zeman", "9.B", ad_username="zemanzoe",
                     ad_email="zemanzoe@skola.cz", account_enabled=True,
-                    ad_status=ADStatus.SYNCED),
+                    ad_status=ADStatus.SYNC_SUCCEEDED),
         make_person("Adam", "Adamec", "6.A"),
         make_person("Milan", "Novák", "7.C", ad_username="novakmilan",
                     ad_password="Str0ng!pass", ad_display_name="Milan Novák (7.C)"),
@@ -300,12 +300,29 @@ def test_refresh_shows_the_password_policy_columns(widget, source_of,
         ["✓", "", "✓"]
 
 
-def test_refresh_shows_the_ad_status_value(widget, source_of, make_person):
-    """The Status column shows the enum *value*, not its name."""
+def test_refresh_shows_the_readable_ad_status(widget, source_of, make_person):
+    """The Status column shows the label, not the enum name or its raw value."""
     widget.visible_columns = ["Status"]
-    widget.set_source(source_of([make_person(ad_status=ADStatus.UPDATE_PENDING)]))
+    widget.set_source(source_of([make_person(ad_status=ADStatus.DIFFERS_FROM_AD)]))
 
-    assert row_texts(widget.person_table) == [ADStatus.UPDATE_PENDING.value]
+    assert row_texts(widget.person_table) == [ADStatus.DIFFERS_FROM_AD.label]
+
+
+def test_the_status_cell_explains_itself_in_a_tooltip(widget, source_of,
+                                                      make_person):
+    """The short label is enough for a glance; the sentence is one hover away."""
+    widget.visible_columns = ["Status"]
+    widget.set_source(source_of([make_person(ad_status=ADStatus.MULTIPLE_AD_MATCHES)]))
+
+    assert widget.person_table.item(0, 0).toolTip() == \
+        ADStatus.MULTIPLE_AD_MATCHES.description
+
+
+@pytest.mark.parametrize("status", list(ADStatus))
+def test_every_status_has_a_label_and_an_explanation(status):
+    """A status the table cannot describe would be a blank cell."""
+    assert status.label and status.description
+    assert status.label != status.value
 
 
 def test_refresh_renders_diacritics_unchanged(widget, source_of, make_person):

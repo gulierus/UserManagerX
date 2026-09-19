@@ -576,10 +576,10 @@ def test_check_missing_properties_counts_whitespace_as_present(ad_person):
 
 def test_check_missing_properties_does_not_touch_the_person(ad_person):
     """The check is read-only: no dirty flag, no status change."""
-    person = ad_person(ad_email=None, ad_status=ADStatus.SYNCED)
+    person = ad_person(ad_email=None, ad_status=ADStatus.SYNC_SUCCEEDED)
     ADValidator.check_missing_properties(person)
     assert person.is_dirty() is False
-    assert person.ad_status is ADStatus.SYNCED
+    assert person.ad_status is ADStatus.SYNC_SUCCEEDED
 
 
 # ===========================================================================
@@ -819,7 +819,7 @@ def test_create_sync_plan_parks_an_incomplete_person_instead_of_creating_her(
     assert plan.statistics["requires_user_action"] == 1
 
 
-@pytest.mark.parametrize("status", [ADStatus.UNKNOWN, ADStatus.NOT_IN_AD])
+@pytest.mark.parametrize("status", [ADStatus.UNKNOWN, ADStatus.NOT_FOUND_IN_AD])
 def test_create_sync_plan_treats_unknown_and_absent_persons_as_creations(
         planner, ad_person, make_source, make_class, status):
     """Both "never looked" and "confirmed absent" lead to a create."""
@@ -833,7 +833,7 @@ def test_create_sync_plan_treats_unknown_and_absent_persons_as_creations(
 def test_create_sync_plan_updates_a_dirty_person_that_exists_in_ad(
         planner, ad_person, make_source, make_class):
     """EXISTS_IN_AD plus local edits gives an UpdateOperation with those edits."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     person.ad_email = "novy@skola.cz"
     source = single_class_source(make_source, make_class, [person])
 
@@ -851,7 +851,7 @@ def test_create_sync_plan_updates_a_dirty_person_that_exists_in_ad(
 def test_create_sync_plan_skips_an_unchanged_person_that_exists_in_ad(
         planner, ad_person, make_source, make_class):
     """Nothing dirty means no update operation, even for a known AD user."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     source = single_class_source(make_source, make_class, [person])
 
     plan = planner.create_sync_plan(source, BASE_DN)
@@ -863,7 +863,7 @@ def test_create_sync_plan_skips_an_unchanged_person_that_exists_in_ad(
 def test_create_sync_plan_skips_a_clean_synced_person_entirely(
         planner, ad_person, make_source, make_class):
     """A clean SYNCED person is short-circuited before the conflict detector runs."""
-    person = ad_person(ad_status=ADStatus.SYNCED, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.SYNC_SUCCEEDED, ad_dn="CN=Jan,DC=skola")
     source = single_class_source(make_source, make_class, [person])
 
     plan = planner.create_sync_plan(source, BASE_DN)
@@ -877,7 +877,7 @@ def test_create_sync_plan_skips_a_clean_synced_person_entirely(
 def test_create_sync_plan_creates_a_person_that_claims_ad_but_has_no_dn(
         planner, ad_person, make_source, make_class):
     """Without a DN there is nothing to modify, so the person is (re)created."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn=None)
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn=None)
     person.ad_email = "novy@skola.cz"
     source = single_class_source(make_source, make_class, [person])
 
@@ -890,7 +890,7 @@ def test_create_sync_plan_creates_a_person_that_claims_ad_but_has_no_dn(
 def test_create_sync_plan_marks_the_operation_when_the_detector_finds_a_conflict(
         ad_person, make_source, make_class):
     """A ConflictInfo from the detector is carried into the UpdateOperation."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     person.ad_email = "novy@skola.cz"
     conflict = make_conflict_info(person)
     planner = SyncPlanner(FakeADClient(), StubDetector(conflict))
@@ -912,7 +912,7 @@ def test_create_sync_plan_walks_every_class_in_order(
     incomplete = ad_person(first_name="Josef", class_name="6.A", ad_password=None)
     existing = ad_person(first_name="Jakub", class_name="7.B",
                          ad_username="novakjak",
-                         ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jakub,DC=skola")
+                         ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jakub,DC=skola")
     existing.ad_description = "sedmák"
 
     source = make_source("AD source", [])
@@ -942,9 +942,9 @@ def test_create_sync_plan_of_an_empty_source_is_an_empty_plan(planner, make_sour
 def test_create_sync_plan_plans_an_update_for_an_edited_already_synced_person(
         planner, ad_person, make_source, make_class):
     """Editing a SYNCED person (-> UPDATE_PENDING) must still reach Active Directory."""
-    person = ad_person(ad_status=ADStatus.SYNCED, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.SYNC_SUCCEEDED, ad_dn="CN=Jan,DC=skola")
     person.ad_email = "novy@skola.cz"
-    assert person.ad_status is ADStatus.UPDATE_PENDING     # set by the model
+    assert person.ad_status is ADStatus.DIFFERS_FROM_AD     # set by the model
     source = single_class_source(make_source, make_class, [person])
 
     plan = planner.create_sync_plan(source, BASE_DN)
@@ -956,7 +956,7 @@ def test_create_sync_plan_plans_an_update_for_an_edited_already_synced_person(
 def test_create_sync_plan_never_creates_an_ambiguous_person(
         planner, ad_person, make_source, make_class):
     """A person matching several AD accounts must not get yet another one."""
-    person = ad_person(ad_status=ADStatus.AMBIGUOUS)
+    person = ad_person(ad_status=ADStatus.MULTIPLE_AD_MATCHES)
     source = single_class_source(make_source, make_class, [person])
 
     plan = planner.create_sync_plan(source, BASE_DN)
@@ -1012,7 +1012,7 @@ def test_an_escaped_dn_value_is_one_rdn_and_reads_back_unchanged(value):
 def synced_person(ad_person):
     """A person known to AD, with a recorded version and AD snapshot."""
     person = ad_person(
-        ad_status=ADStatus.EXISTS_IN_AD,
+        ad_status=ADStatus.MATCHES_AD,
         ad_dn="CN=Jan Novák,OU=Trida-6.A,DC=skola,DC=local",
         ad_version="20240101000000.0Z",
         metadata={"ad_current_values": {
@@ -1404,7 +1404,7 @@ def test_execute_sync_creates_the_user_sets_the_password_and_marks_it_synced(
     # the service only has to delegate, over an encrypted channel.
     assert client.passwords_set == [(dn, GOOD_PASSWORD)]
     assert person.ad_dn == dn
-    assert person.ad_status is ADStatus.SYNCED
+    assert person.ad_status is ADStatus.SYNC_SUCCEEDED
     assert person.is_dirty() is False
     assert person.ad_version == client.timestamp
     assert result.duration >= 0
@@ -1456,7 +1456,7 @@ def test_execute_sync_reports_a_refused_creation_as_failed(
 
     assert [r.status for r in result.failed] == ["FAILED"]
     assert result.failed[0].message == "Failed to create user in AD"
-    assert person.ad_status is not ADStatus.SYNCED
+    assert person.ad_status is not ADStatus.SYNC_SUCCEEDED
 
 
 def test_execute_sync_turns_a_client_exception_into_a_failed_result(
@@ -1521,8 +1521,8 @@ def test_execute_sync_keeps_a_created_user_when_group_sync_explodes(
     assert result.statistics["successful"] == 1
     assert no_group_service.synced == [person]
     # The account exists, so this is not a failure - but the groups are still
-    # outstanding, so claiming SYNCED would hide real pending work.
-    assert person.ad_status is ADStatus.UPDATE_PENDING
+    # outstanding, so claiming a clean synchronisation would hide real work.
+    assert person.ad_status is ADStatus.SYNC_INCOMPLETE
     assert "groups not applied" in result.successful[0].message
 
 
@@ -1596,7 +1596,7 @@ def test_execute_sync_updates_mapped_attributes_and_clears_the_dirty_state(
         sync_service, ad_person, no_group_service):
     """A changed e-mail becomes one MODIFY_REPLACE on ``mail``."""
     dn = "CN=Jan,OU=Trida-6.A,DC=skola,DC=local"
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn=dn)
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn=dn)
     person.ad_email = "novy@skola.cz"
     client = sync_service.test_client
     client.users[dn] = FakeEntry(dn, {"mail": "novy@skola.cz",
@@ -1609,7 +1609,7 @@ def test_execute_sync_updates_mapped_attributes_and_clears_the_dirty_state(
     assert result.statistics == {"total": 1, "successful": 1, "failed": 0,
                                  "skipped": 0}
     assert client.ops_for("mail") == [(MODIFY_REPLACE, "mail", ["novy@skola.cz"])]
-    assert person.ad_status is ADStatus.SYNCED
+    assert person.ad_status is ADStatus.SYNC_SUCCEEDED
     assert person.is_dirty() is False
     assert person.ad_version == "20240303000000.0Z"
     assert person.metadata["ad_current_values"]["mail"] == "novy@skola.cz"
@@ -1619,7 +1619,7 @@ def test_execute_sync_clears_an_attribute_with_an_empty_value_list(
         sync_service, ad_person, no_group_service):
     """Setting a field to ``None`` sends an empty value list, i.e. "delete"."""
     dn = "CN=Jan,DC=skola"
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn=dn)
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn=dn)
     plan = SyncPlan(update_operations=[
         UpdateOperation(person=person, changes={"ad_description": None})])
 
@@ -1632,7 +1632,7 @@ def test_execute_sync_clears_an_attribute_with_an_empty_value_list(
 def test_execute_sync_skips_an_update_without_changes(
         sync_service, ad_person, no_group_service):
     """An empty change set is skipped and nothing is sent to AD."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     plan = SyncPlan(update_operations=[UpdateOperation(person=person, changes={})])
 
     result = sync_service.execute_sync(plan)
@@ -1648,20 +1648,20 @@ def test_execute_sync_fails_an_update_the_client_refuses(
     """A rejected attribute write is a failure and stops the operation."""
     dn = "CN=Jan,DC=skola"
     sync_service.test_client.modify_results = {"mail": False}
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn=dn)
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn=dn)
     plan = SyncPlan(update_operations=[
         UpdateOperation(person=person, changes={"ad_email": "novy@skola.cz"})])
 
     result = sync_service.execute_sync(plan)
 
     assert "attributes were not updated" in result.failed[0].message
-    assert person.ad_status is ADStatus.UPDATE_PENDING
+    assert person.ad_status is ADStatus.SYNC_INCOMPLETE
 
 
 def test_execute_sync_skips_a_conflict_nobody_answered(
         sync_service, ad_person, no_group_service):
     """USER_PROMPT without choices for that person leaves the record alone."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     plan = SyncPlan(update_operations=[UpdateOperation(
         person=person, changes={"ad_email": "l@skola.cz"},
         has_conflict=True, conflict_info=make_conflict_info(person))])
@@ -1676,7 +1676,7 @@ def test_execute_sync_skips_a_conflict_nobody_answered(
 def test_execute_sync_applies_the_user_choices_keyed_by_person_id(
         sync_service, ad_person, no_group_service):
     """Choices are looked up under ``str(id(person))`` and then applied."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     conflict = make_conflict_info(person)
     plan = SyncPlan(update_operations=[UpdateOperation(
         person=person, changes=dict(conflict.local_changes),
@@ -1695,7 +1695,7 @@ def test_execute_sync_applies_the_user_choices_keyed_by_person_id(
 def test_execute_sync_with_local_wins_writes_every_conflicting_field(
         sync_service, ad_person, no_group_service):
     """LOCAL_WINS needs no user input at all."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola")
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola")
     conflict = make_conflict_info(person)
     plan = SyncPlan(update_operations=[UpdateOperation(
         person=person, changes=dict(conflict.local_changes),
@@ -1711,7 +1711,7 @@ def test_execute_sync_with_local_wins_writes_every_conflicting_field(
 def test_execute_sync_updates_account_flags_for_a_policy_change(
         sync_service, ad_person, no_group_service):
     """A policy-only change goes through userAccountControl, not a plain attribute."""
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn="CN=Jan,DC=skola",
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn="CN=Jan,DC=skola",
                        account_enabled=True, password_never_expires=True)
     plan = SyncPlan(update_operations=[
         UpdateOperation(person=person, changes={"account_enabled": True})])
@@ -1726,7 +1726,7 @@ def test_execute_sync_counts_creates_and_updates_together(
         sync_service, ad_person, no_group_service):
     """``total_processed`` covers both phases; incomplete persons are not processed."""
     creating = ad_person()
-    updating = ad_person(first_name="Josef", ad_status=ADStatus.EXISTS_IN_AD,
+    updating = ad_person(first_name="Josef", ad_status=ADStatus.MATCHES_AD,
                          ad_dn="CN=Josef,DC=skola")
     plan = SyncPlan(
         create_operations=[CreateOperation(creating, f"OU=Trida-6.A,{BASE_DN}", {})],
@@ -1763,7 +1763,7 @@ def test_execute_sync_writes_a_changed_home_directory_to_ad(
         sync_service, ad_person, no_group_service):
     """A home directory edited in the UI must reach AD, not vanish on "success"."""
     dn = "CN=Jan,DC=skola"
-    person = ad_person(ad_status=ADStatus.EXISTS_IN_AD, ad_dn=dn)
+    person = ad_person(ad_status=ADStatus.MATCHES_AD, ad_dn=dn)
     person.home_directory = r"\\srv01\home\novakjan"
     plan = SyncPlan(update_operations=[
         UpdateOperation(person=person, changes=person.get_changes())])
