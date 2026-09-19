@@ -30,9 +30,14 @@ logger = logging.getLogger(__name__)
 #: them straight into a terminal.
 GRAPH_REQUIREMENTS = "msgraph-sdk azure-identity"
 
+# Only ClientSecretCredential has an asynchronous implementation.  The device
+# code and user-name/password flows are synchronous-only, which is fine: the
+# Graph token provider awaits the credential's answer when it is awaitable and
+# uses it directly when it is not, and the whole event loop lives inside a
+# worker thread anyway.
 try:
-    from azure.identity.aio import (           # type: ignore
-        ClientSecretCredential,
+    from azure.identity.aio import ClientSecretCredential   # type: ignore
+    from azure.identity import (                            # type: ignore
         DeviceCodeCredential,
         UsernamePasswordCredential,
     )

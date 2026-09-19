@@ -57,6 +57,7 @@ Optional, per feature:
 | `PyQt6-WebEngine` | PDF preview |
 | `edupage-api` | EduPage import |
 | `pikepdf` | PDF password handling |
+| `msgraph-sdk` + `azure-identity` | Microsoft 365 features |
 
 Missing optional packages disable only their own feature — the application
 still starts and everything else keeps working.
@@ -64,6 +65,7 @@ still starts and everything else keeps working.
 ```bash
 pip install PyQt6
 pip install ldap3 pycryptodome reportlab PyQt6-WebEngine edupage-api  # optional
+pip install msgraph-sdk azure-identity                                # optional, Microsoft 365
 ```
 
 ---
