@@ -16,7 +16,9 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QLineEdit, QCheckBox, QDateEdit, QMessageBox,
     QFileDialog, QSplitter, QDialog
 )
-from PyQt6.QtCore import Qt, QDate, QTimer, QThread, pyqtSignal  # FIX 11: Added QThread
+from PyQt6.QtCore import (  # FIX 11: Added QThread
+    Qt, QDate, QObject, QTimer, QThread, pyqtSignal,
+)
 from PyQt6.QtGui import QFont, QTextCursor
 
 from utils.logging_config import get_logging_config, MB_TO_BYTES, LOG_COLORS
@@ -200,20 +202,70 @@ class HistoricalFilterThread(QThread):
         return True
 
 
-class RealTimeLogHandler(logging.Handler):
-    """FIX 18: Custom handler that stores logs in memory and displays them"""
-    
+class RealTimeLogHandler(QObject, logging.Handler):
+    """
+    Logging handler that feeds the real-time view.
+
+    **This handler is called from whatever thread logged the message**, and
+    the worker threads (``AbstractProgressTask.run`` and everything it calls)
+    log a great deal. The previous version invoked the callback directly, so a
+    background thread ended up manipulating the QTextDocument of the real-time
+    view while the GUI thread was doing the same:
+
+        File "ui/log_viewer_tab.py", line 736 in append_colored_line
+        ...
+        File "utils/progress_tasks.py", line 141 in run     <- worker thread
+        Windows fatal exception: access violation
+
+    Qt widgets and QTextDocument may only be touched from the GUI thread.
+    Doing it from another one corrupts memory, which is why the crash was
+    intermittent - it depended on what the GUI thread happened to be doing at
+    that moment, and it could take the process down before the traceback was
+    even flushed.
+
+    The record is now handed over with a Qt signal. The handler object lives in
+    the GUI thread, so Qt's automatic connection becomes a *queued* one for
+    anything emitted from a worker: the text is appended later, by the GUI
+    thread, on its own event loop.
+    """
+
+    #: Carries ``(formatted_message, levelno, record)`` to the GUI thread.
+    #: The record travels along so a failing callback can still be reported
+    #: through ``logging.Handler.handleError`` the way the logging module
+    #: expects.
+    record_logged = pyqtSignal(str, int, object)
+
     def __init__(self, callback):
-        super().__init__()
-        self.callback = callback
-    
-    def emit(self, record):
-        """Emit log record via callback"""
+        QObject.__init__(self)
+        logging.Handler.__init__(self)
+        self._callback = callback
+        # Automatic connection: direct within the GUI thread, queued from a
+        # worker thread. Either way the slot runs in the GUI thread, because
+        # this object was created there.
+        self.record_logged.connect(self._deliver)
+
+    def _deliver(self, msg: str, level: int, record) -> None:
+        """
+        Hand one record to the view, in the GUI thread.
+
+        The callback is guarded here rather than around ``emit()``: with a
+        queued connection the callback runs inside Qt's event loop, and PyQt6
+        turns an unhandled exception in a slot into ``qFatal()`` - it would
+        abort the whole process instead of being reported as a logging error.
+        """
         try:
-            msg = self.format(record)
-            self.callback(msg, record.levelno)
+            self._callback(msg, level)
         except Exception:
             self.handleError(record)
+
+    def emit(self, record):
+        """Format the record and hand it to the GUI thread."""
+        try:
+            msg = self.format(record)
+        except Exception:
+            self.handleError(record)
+            return
+        self.record_logged.emit(msg, record.levelno, record)
 
 
 class LogConfigDialog(QDialog):

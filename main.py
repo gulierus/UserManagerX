@@ -7,11 +7,11 @@ VERSION 2 - With Font Manager initialization
 import sys
 import logging
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QTabBar, QTabWidget, QWidget, QVBoxLayout,
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QMessageBox, QStyleFactory
 )
 from PyQt6.QtGui import QPalette, QColor
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt
 
 # CRITICAL: QtWebEngine (used by the PDF preview) requires the
 # AA_ShareOpenGLContexts attribute to be set before the QApplication instance
@@ -36,6 +36,7 @@ from ui.operations_tab import OperationsTab
 from ui.settings_tab import SettingsTab
 from ui.log_viewer_tab import LogViewerTab
 from ui.source_manager_tab import SourceManagerTab
+from ui.equal_width_tab_bar import EqualWidthTabBar
 from models import SourceManager
 from utils.logging_config import setup_application_logging
 from utils.font_manager import initialize_fonts, get_font_manager
@@ -44,33 +45,6 @@ from utils.font_manager import initialize_fonts, get_font_manager
 logging_config = setup_application_logging()
 
 logger = logging.getLogger(__name__)
-
-
-class EqualWidthTabBar(QTabBar):
-    """
-    Tab bar in which every tab is exactly as wide as the widest one.
-
-    Qt sizes each tab to its own label, so "1. Data Sources" and "5. Logs"
-    end up with very different widths.  Returning the maximum size hint for
-    every tab makes the whole bar uniform, which is what the application
-    asks for.
-    """
-
-    #: Extra horizontal padding added to the widest label.
-    PADDING = 16
-
-    def tabSizeHint(self, index: int) -> QSize:
-        """Return the same size for every tab: the largest natural one."""
-        hint = super().tabSizeHint(index)
-
-        widest = hint.width()
-        tallest = hint.height()
-        for other in range(self.count()):
-            other_hint = super().tabSizeHint(other)
-            widest = max(widest, other_hint.width())
-            tallest = max(tallest, other_hint.height())
-
-        return QSize(widest + self.PADDING, tallest)
 
 
 class StudentManagementSystem(QMainWindow):
@@ -148,7 +122,32 @@ class StudentManagementSystem(QMainWindow):
             )
             raise
         
+        # Resolve the current year in the background. Loading a source
+        # calculates enrollment years and needs it; doing the lookup at that
+        # moment would block the window, so it is warmed up here instead.
+        self._start_year_warmup()
+
         logger.debug("UI initialization complete")
+
+    def _start_year_warmup(self):
+        """Resolve the current year in a worker thread, without any UI."""
+        try:
+            from utils.enrollment_service import is_year_cached
+            from utils.enrollment_task import YearWarmupTask
+
+            if is_year_cached():
+                logger.debug("Year already resolved - no warm-up needed")
+                return
+
+            self._year_warmup = YearWarmupTask()
+            self._year_warmup.task_finished.connect(
+                lambda success, _end, message: logger.info(
+                    "Year warm-up %s: %s", "ok" if success else "failed", message
+                )
+            )
+            self._year_warmup.start()
+        except Exception:
+            logger.exception("Could not start the year warm-up")
         
     def _apply_saved_theme(self):
         """Apply the theme that was saved in SettingsManager."""
@@ -213,6 +212,13 @@ class StudentManagementSystem(QMainWindow):
                     logger.warning(f"Error closing tab {index}: {e}")
         except Exception as e:
             logger.warning(f"Error closing application tabs: {e}")
+
+        # Stop the year warm-up if it is still running
+        warmup = getattr(self, "_year_warmup", None)
+        if warmup is not None and warmup.isRunning():
+            warmup.request_cancel()
+            if not warmup.wait(2000):
+                logger.warning("Year warm-up did not stop in time")
 
         # Cleanup font manager temporary files
         try:

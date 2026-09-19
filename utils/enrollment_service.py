@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 _cached_resolution: Optional[YearResolution] = None
 
 
+def is_year_cached() -> bool:
+    """True when the current year has already been resolved this session."""
+    return _cached_resolution is not None
+
+
 def get_year_resolution(refresh: bool = False,
                         use_internet: bool = True) -> YearResolution:
     """
@@ -75,7 +80,24 @@ def update_source_enrollment_years(source, parent=None, silent: bool = False,
     Returns:
         ``(number_of_classes_updated, year_resolution)``
     """
-    resolution = get_year_resolution(refresh=refresh_year)
+    # The automatic run must never block the window on a network request. If
+    # the year has not been resolved yet (the start-up warm-up has not finished,
+    # or it failed) fall back to this computer's clock; the explicit button on
+    # the Comparison tab does the full lookup behind a progress dialog.
+    if silent and not is_year_cached():
+        resolution = resolve_current_year(use_internet=False)
+        logger.info("Enrollment years calculated from the system clock "
+                    "(the year has not been resolved yet)")
+        changes = compute_enrollment_changes(source, resolution.year)
+        if not changes:
+            return 0, resolution
+        conflicts = [change for change in changes if change.conflicts]
+        if not conflicts:
+            updated = apply_enrollment_changes(source, changes)
+            return updated, resolution
+        # A conflict still needs the user, so fall through to the dialog.
+    else:
+        resolution = get_year_resolution(refresh=refresh_year)
     changes = compute_enrollment_changes(source, resolution.year)
 
     if not changes:

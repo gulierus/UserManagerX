@@ -976,9 +976,10 @@ class ComparisonTab(QWidget):
         """
         Recalculate the enrollment year of every class of one input source.
 
-        The same calculation runs automatically when a source is loaded; this
-        button re-runs it on demand - after a shift, for instance, when the
-        grades have moved and the enrollment year has not.
+        The year lookup asks the internet, which can take seconds on a machine
+        without a connection. It therefore runs in a background task behind a
+        progress dialog - doing it inline froze the whole window - and only the
+        confirmation dialog happens on the GUI thread.
         """
         source = self._panel_source(side)
         if source is None:
@@ -989,18 +990,28 @@ class ComparisonTab(QWidget):
                                     f"'{source.name}' contains no classes.")
             return
 
-        try:
-            from utils.enrollment_service import update_source_enrollment_years
-            updated, resolution = update_source_enrollment_years(
-                source, parent=self, silent=False, refresh_year=True
-            )
-        except Exception as exc:
-            logger.exception("Enrollment year calculation failed")
-            QMessageBox.critical(self, "Error",
-                                 f"Could not calculate the enrollment years:\n\n{exc}")
+        from utils.enrollment_task import EnrollmentYearTask
+        from utils.progress_dialog import ProgressDialog
+
+        task = EnrollmentYearTask(source)
+        progress = ProgressDialog(task, self)
+        progress.start_task()
+        progress.exec()
+
+        if progress.was_cancelled():
+            logger.info("Enrollment year calculation cancelled for %r", source.name)
             return
 
-        if not updated:
+        resolution = task.resolution
+        if resolution is None:
+            QMessageBox.critical(
+                self, "Error",
+                "The current year could not be determined, so no enrollment "
+                "year was calculated."
+            )
+            return
+
+        if not task.changes:
             QMessageBox.information(
                 self, "Nothing Changed",
                 f"No enrollment year needed to be changed.\n\n"
@@ -1008,7 +1019,19 @@ class ComparisonTab(QWidget):
             )
             return
 
+        from ui.enrollment_year_dialog import EnrollmentYearDialog
+        from utils.school_year import apply_enrollment_changes
+
+        dialog = EnrollmentYearDialog(task.changes, resolution, source.name, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        updated = apply_enrollment_changes(source, dialog.selected_changes())
+        if not updated:
+            return
+
         self.source_manager.notify_source_modified(source.name)
+        self.refresh_all_panels()
         QMessageBox.information(
             self, "Enrollment Years Updated",
             f"Set the enrollment year of {updated} class(es) in '{source.name}'.\n\n"

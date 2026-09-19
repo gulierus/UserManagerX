@@ -233,6 +233,27 @@ def _reset_password_policy():
     pp._active_policy = original
 
 
+@pytest.fixture(autouse=True)
+def _no_network_year_lookup():
+    """
+    Pre-resolve the current year so no test ever asks the internet.
+
+    The main window warms the year cache in a background thread at start-up,
+    and loading a source needs the year too. Without this fixture every test
+    that builds a window or adds a source would make a real HTTP request.
+    """
+    import utils.enrollment_service as service
+    from utils.school_year import YearResolution, get_system_year
+
+    original = service._cached_resolution
+    system_year = get_system_year()
+    service._cached_resolution = YearResolution(
+        system_year=system_year, internet_year=system_year, year=system_year,
+    )
+    yield service._cached_resolution
+    service._cached_resolution = original
+
+
 @pytest.fixture
 def isolated_logging_config(tmp_path, monkeypatch):
     """Give LoggingConfig its own config file and log directory."""
