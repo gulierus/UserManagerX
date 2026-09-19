@@ -139,8 +139,34 @@ def select_item(panel, item):
 
 
 def source_names(panel):
-    """Every entry of the panel's source combo box, in order."""
-    return [panel.source_combo.itemText(i) for i in range(panel.source_combo.count())]
+    """
+    Every source the panel's combo box offers, in order.
+
+    The visible text carries the access mode ("L (editable)"), so the plain
+    source name is read from the item data; the placeholder row, which has no
+    data, reports its text.  The decoration is covered by
+    tests/test_source_combo.py.
+    """
+    combo = panel.source_combo
+    names = []
+    for index in range(combo.count()):
+        data = combo.itemData(index)
+        names.append(data if isinstance(data, str) and data else combo.itemText(index))
+    return names
+
+
+def select_source(combo, name):
+    """Select a source in a source combo box by its name."""
+    from ui.source_combo import find_source_index
+    index = find_source_index(combo, name)
+    assert index >= 0, f"{name!r} is not in the combo"
+    combo.setCurrentIndex(index)
+
+
+def selected_source(combo):
+    """The name of the source a combo box currently shows."""
+    from ui.source_combo import combo_source_name
+    return combo_source_name(combo)
 
 
 def class_names(source):
@@ -183,7 +209,7 @@ def panel_for(source_manager):
             if not any(existing is source for existing in source_manager.sources):
                 source_manager.add_source(source)
             panel.refresh_sources()
-            panel.source_combo.setCurrentText(source.name)
+            select_source(panel.source_combo, source.name)
             assert panel.current_source is source
         return panel
     return _make
@@ -202,8 +228,8 @@ def loaded_tab(tab, source_manager, build_source):
     right = build_source([("6.A", [("Jan", "Novák"), ("Petr", "Dvořák")])], name="R")
     source_manager.add_source(left)
     source_manager.add_source(right)
-    tab.left_panel.source_combo.setCurrentText("L")
-    tab.right_panel.source_combo.setCurrentText("R")
+    select_source(tab.left_panel.source_combo, "L")
+    select_source(tab.right_panel.source_combo, "R")
     assert tab.left_panel.current_source is left
     assert tab.right_panel.current_source is right
     return tab, left, right
@@ -230,7 +256,7 @@ def test_refresh_sources_keeps_the_selected_source_when_it_still_exists(
     panel = panel_for(first)
     source_manager.add_source(build_source([], name="Beta"))
 
-    assert panel.source_combo.currentText() == "Alpha"
+    assert selected_source(panel.source_combo) == "Alpha"
     assert panel.current_source is first
     assert source_names(panel) == ["(Select Source)", "Alpha", "Beta"]
     assert tree_snapshot(panel) == [("6.A", ["Jan Novák"])]
@@ -244,7 +270,7 @@ def test_refresh_sources_clears_a_selection_whose_source_disappeared(
 
     source_manager.remove_source(source)
 
-    assert panel.source_combo.currentText() == "(Select Source)"
+    assert selected_source(panel.source_combo) == "(Select Source)"
     assert panel.current_source is None
     assert tree_snapshot(panel) == []
     assert panel.stats_label.text() == ""
@@ -256,14 +282,14 @@ def test_refresh_sources_is_idempotent(source_manager, build_source, panel_for):
     panel.refresh_sources()
     panel.refresh_sources()
     assert source_names(panel) == ["(Select Source)", "Alpha"]
-    assert panel.source_combo.currentText() == "Alpha"
+    assert selected_source(panel.source_combo) == "Alpha"
 
 
 def test_selecting_the_placeholder_again_releases_the_source(
         build_source, panel_for):
     """Going back to '(Select Source)' clears everything the panel showed."""
     panel = panel_for(build_source([("6.A", [("Jan", "Novák")])]))
-    panel.source_combo.setCurrentText("(Select Source)")
+    select_source(panel.source_combo, "(Select Source)")
     assert panel.current_source is None
     assert tree_snapshot(panel) == []
     assert panel.stats_label.text() == ""
@@ -1149,7 +1175,7 @@ def test_convert_class_numerals_reports_a_source_without_classes(
     """An empty source is refused before the dialog is even built."""
     empty = build_source([], name="Empty")
     source_manager.add_source(empty)
-    tab.left_panel.source_combo.setCurrentText("Empty")
+    select_source(tab.left_panel.source_combo, "Empty")
 
     tab.convert_class_numerals("left")
 
@@ -1176,7 +1202,7 @@ def test_convert_class_numerals_reports_when_nothing_would_change(
     """A source that is already Roman produces the 'nothing changed' message."""
     source = build_source([("VI.A", [("Jan", "Novák", "VI.A")])], name="Roman")
     source_manager.add_source(source)
-    tab.left_panel.source_combo.setCurrentText("Roman")
+    select_source(tab.left_panel.source_combo, "Roman")
 
     tab.convert_class_numerals("left")
 
@@ -1187,7 +1213,7 @@ def test_convert_class_numerals_reports_when_nothing_would_change(
 def test_merge_sources_requires_both_panels(tab, source_manager, build_source, dialogs):
     """One selected source is not enough for a merge."""
     source_manager.add_source(build_source([("6.A", [])], name="L"))
-    tab.left_panel.source_combo.setCurrentText("L")
+    select_source(tab.left_panel.source_combo, "L")
 
     tab.merge_sources()
 
@@ -1219,8 +1245,8 @@ def test_merge_sources_reports_collapsed_duplicate_records(
     right = build_source([("6.A", [("Jan", "Novák")])], name="R")
     source_manager.add_source(left)
     source_manager.add_source(right)
-    tab.left_panel.source_combo.setCurrentText("L")
-    tab.right_panel.source_combo.setCurrentText("R")
+    select_source(tab.left_panel.source_combo, "L")
+    select_source(tab.right_panel.source_combo, "R")
     queue_text(monkeypatch, "Merged")
 
     tab.merge_sources()
@@ -1234,7 +1260,7 @@ def test_analyze_source_reports_that_nothing_was_applied(
     """Accepting the analysis dialog without a fix saves nothing."""
     source = build_source([("6.A", [("Jan", "Novák")])], name="L")
     source_manager.add_source(source)
-    tab.left_panel.source_combo.setCurrentText("L")
+    select_source(tab.left_panel.source_combo, "L")
 
     tab.analyze_source("left")
 

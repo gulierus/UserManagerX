@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_SETTINGS: Dict[str, Dict[str, Any]] = {
     "general": {
         "show_group_management_warning": True,
+        # Append "(read-only)" / "(editable)" to every source name shown in a
+        # source combo box, so the user sees before picking a source whether
+        # it can be edited at all.
+        "show_source_access_in_lists": True,
         "theme": "Dark",
         "last_ad_server": "",
         "last_ad_base_dn": "",

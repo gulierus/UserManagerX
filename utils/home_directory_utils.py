@@ -64,6 +64,7 @@ class HomeDirectoryPathGenerator:
         'last_name': 'Last name (supports part selection)',
         'username': 'AD username',
         'class_name': 'Class name',
+        'enrollment_year': 'Year the class started the first grade (6.A -> 2020)',
     }
     
     @classmethod
@@ -189,7 +190,21 @@ class HomeDirectoryPathGenerator:
             if not person.class_name:
                 raise PlaceholderError("Class name is empty")
             return person.class_name
-        
+
+        elif field_name == 'enrollment_year':
+            # The enrollment year belongs to the Class; apply_enrollment_changes()
+            # stamps a copy onto every student because a Person has no way back
+            # to its Class.
+            year = getattr(person, 'enrollment_year', None)
+            if not year:
+                year = (getattr(person, 'metadata', None) or {}).get('enrollment_year')
+            if not year:
+                raise PlaceholderError(
+                    "This person has no enrollment year yet - calculate it with "
+                    "the 'Enrollment Years' button on the Comparison and Sync tab"
+                )
+            return str(year)
+
         else:
             raise PlaceholderError(f"Unknown placeholder: {field_name}")
     

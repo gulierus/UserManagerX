@@ -5,11 +5,12 @@ Active Directory data source implementation
 import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QMessageBox, QProgressDialog, QComboBox
+    QPushButton, QMessageBox, QProgressDialog, QComboBox, QInputDialog
 )
 from PyQt6.QtCore import Qt
 
 from models import Source, Class, Person
+from utils.source_naming import suggest_ad_source_name
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,66 @@ class ActiveDirectorySourceWidget(QWidget):
             return f'(|{uppercase}{lowercase})'
         return uppercase
 
+    def _ask_for_source_name(self, source) -> bool:
+        """
+        Let the user confirm or change the name of a freshly loaded source.
+
+        The suggested name is already unique, so simply pressing OK always
+        works.  A name that is taken is not silently accepted: a second source
+        with the same name is unreachable through every lookup by name, so the
+        user is asked whether the existing one should be replaced.
+
+        Args:
+            source: The source to name.  Renamed in place on success, and the
+                replaced source (if any) is removed from the manager.
+
+        Returns:
+            ``True`` when the source is named and may be added, ``False`` when
+            the user cancelled the whole load.
+        """
+        default_name = source.name
+        replaced_source = None
+
+        while True:
+            name, ok = QInputDialog.getText(
+                self,
+                "Name Source",
+                "Enter a name for this Active Directory source:",
+                QLineEdit.EchoMode.Normal,
+                default_name
+            )
+
+            if not ok:
+                return False
+
+            name = (name or "").strip()
+            if not name:
+                QMessageBox.warning(self, "Invalid Name",
+                                    "Source name cannot be empty")
+                continue
+
+            existing = self.source_manager.get_source_by_name(name)
+            if existing is not None:
+                reply = QMessageBox.question(
+                    self,
+                    "Duplicate Name",
+                    f"Source '{name}' already exists. Replace it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    default_name = name
+                    continue
+                replaced_source = existing
+
+            source.name = name
+            break
+
+        if replaced_source is not None:
+            self.source_manager.remove_source(replaced_source)
+            logger.info("Replaced existing source: %s", source.name)
+
+        return True
+
     def on_load(self):
         """Load data from Active Directory"""
         server = self.server_input.text().strip()
@@ -172,9 +233,18 @@ class ActiveDirectorySourceWidget(QWidget):
             
             progress.setLabelText("Searching for class organizational units...")
             
-            # Search for class OUs (Trida-6X pattern)
+            # Search for class OUs (Trida-6X pattern).
+            #
+            # The name is a readable default built from the directory and the
+            # branch that is being loaded ('AD school.local - Students')
+            # instead of the raw connection URL, and it is already free - two
+            # loads of the same directory used to produce two sources with
+            # identical names, and every lookup by name then found only the
+            # first of them.  The user confirms or changes it once the data is
+            # actually here (see below).
             source = Source(
-                name=f"AD-{server}",
+                name=suggest_ad_source_name(
+                    server, base_dn, self.source_manager.get_source_names()),
                 source_type="active_directory",
                 readonly=True
             )
@@ -252,12 +322,18 @@ class ActiveDirectorySourceWidget(QWidget):
                 )
                 return
             
+            # Let the user confirm or change the name, the same way the
+            # EduPage and file loaders do.  Cancelling discards the load.
+            if not self._ask_for_source_name(source):
+                logger.info("Active Directory load cancelled at the naming step")
+                return
+
             self.source_manager.add_source(source)
             QMessageBox.information(
                 self,
                 "Success",
                 f"Successfully loaded {len(source.get_all_persons())} students "
-                f"from {len(source.classes)} classes"
+                f"from {len(source.classes)} classes into '{source.name}'"
             )
             logger.info(f"Successfully loaded AD source: {source.name}")
             

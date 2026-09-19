@@ -499,10 +499,27 @@ def test_validate_template_cannot_know_whether_a_part_index_exists():
 # get_available_placeholders / get_example_templates
 # ===========================================================================
 
-def test_available_placeholders_lists_the_four_supported_fields():
+def test_available_placeholders_lists_every_supported_field():
     """Exactly the fields generate_path knows how to resolve."""
     assert set(G.get_available_placeholders()) == \
-        {"first_name", "last_name", "username", "class_name"}
+        {"first_name", "last_name", "username", "class_name", "enrollment_year"}
+
+
+def test_enrollment_year_placeholder_uses_the_year_stamped_on_the_person(make_person):
+    """The year lives on the Class, so it is read from the person's metadata."""
+    person = make_person("Jan", "Novák", "6.A", ad_username="novakjan")
+    person.metadata["enrollment_year"] = 2020
+
+    assert G.generate_path(r"\\srv\{enrollment_year}\{username}", person) == \
+        r"\\srv\2020\novakjan"
+
+
+def test_enrollment_year_placeholder_explains_itself_when_unset(make_person):
+    """A person without the year gets a message that says what to do."""
+    person = make_person("Eva", "Malá", "7.B", ad_username="malaeva")
+
+    with pytest.raises(PlaceholderError, match="no enrollment year"):
+        G.generate_path(r"\\srv\{enrollment_year}\{username}", person)
 
 
 def test_available_placeholders_returns_a_defensive_copy():

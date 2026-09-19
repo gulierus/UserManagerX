@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.log_directory_widget import LogDirectoryWidget
+from ui.source_combo import ACCESS_SETTING_CATEGORY, ACCESS_SETTING_KEY
 from utils.settings_manager import (
     DEFAULT_SETTINGS, get_settings, VALID_LOG_LEVELS,
 )
@@ -369,6 +370,20 @@ class SettingsTab(QWidget):
         )
         gl.addWidget(self.warn_on_no_creds)
         layout.addWidget(grp)
+
+        source_grp = QGroupBox("Source Lists")
+        sl = QVBoxLayout(source_grp)
+        self.show_source_access = QCheckBox(
+            "Show whether a source is read-only or editable in source lists"
+        )
+        self.show_source_access.setToolTip(
+            "When enabled, every source selector appends the access mode to the "
+            "name - \"Students 2025 (editable)\", \"AD school.local (read-only)\" - "
+            "so you can tell before selecting a source whether it can be edited."
+        )
+        sl.addWidget(self.show_source_access)
+        layout.addWidget(source_grp)
+
         layout.addStretch()
         return self._wrap_in_scroll(container)
 
@@ -548,6 +563,14 @@ class SettingsTab(QWidget):
         )
         self.warn_on_no_creds.blockSignals(False)
 
+        self.show_source_access.blockSignals(True)
+        self.show_source_access.setChecked(
+            self.settings.get_bool(
+                ACCESS_SETTING_KEY, True, category=ACCESS_SETTING_CATEGORY
+            )
+        )
+        self.show_source_access.blockSignals(False)
+
     def _reload_logging_settings(self):
         """Reload only the logging-category controls from SettingsManager."""
         log_cfg = self.settings.get_logging_config()
@@ -587,6 +610,7 @@ class SettingsTab(QWidget):
             # --- Capture ALL values before any write ---
             theme_val          = self.theme_combo.currentText()
             warn_val           = self.warn_on_no_creds.isChecked()
+            source_access_val  = self.show_source_access.isChecked()
             log_level_val      = self.log_level_combo.currentText()
             max_bytes_val      = self.max_size_spin.value() * 1024 * 1024
             backup_count_val   = self.backup_count_spin.value()
@@ -610,7 +634,11 @@ class SettingsTab(QWidget):
             warning_saved = self.settings.set(
                 "show_group_management_warning", warn_val, category="general"
             )
-            general_saved = theme_saved and warning_saved
+            source_access_saved = self.settings.set(
+                ACCESS_SETTING_KEY, source_access_val,
+                category=ACCESS_SETTING_CATEGORY
+            )
+            general_saved = theme_saved and warning_saved and source_access_saved
             logging_saved = self.settings.update_logging_config(
                 log_level=log_level_val,
                 max_bytes=max_bytes_val,

@@ -265,7 +265,7 @@ class BulkEditDialog(QDialog):
         # Available placeholders, so the user does not have to guess
         placeholder_help = QLabel(
             "<i>Placeholders: {first_name}, {last_name}, {username}, "
-            "{class_name} &nbsp;·&nbsp; part/length selection: "
+            "{class_name}, {enrollment_year} &nbsp;·&nbsp; part/length selection: "
             "{last_name:1:3} = first 3 letters of the first surname</i>"
         )
         placeholder_help.setWordWrap(True)

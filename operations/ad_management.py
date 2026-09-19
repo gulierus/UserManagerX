@@ -466,7 +466,16 @@ class ADManagementWidget(QWidget):
             "Active Directory only accepts password changes over an encrypted\n"
             "channel - without this, setting passwords fails with\n"
             "'unwillingToPerform'.\n"
-            "Use an ldaps:// address instead to connect encrypted from the start."
+            "\n"
+            "You do NOT need an ldaps:// address for this: StartTLS encrypts\n"
+            "the ordinary ldap:// connection on port 389.  An ldaps:// address\n"
+            "(port 636) is the alternative - it is already encrypted, so this\n"
+            "option is then ignored.\n"
+            "\n"
+            "The domain controller does need a server certificate for LDAP;\n"
+            "without one it refuses the upgrade.  The certificate does not have\n"
+            "to be trusted by this computer unless 'Verify server certificate'\n"
+            "is switched on."
         )
         row5.addWidget(self.ad_start_tls_check)
 
@@ -475,7 +484,10 @@ class ADManagementWidget(QWidget):
         self.ad_validate_cert_check.setToolTip(
             "Verify the domain controller's certificate.\n"
             "Usually off, because school domain controllers commonly use a\n"
-            "self-signed certificate."
+            "self-signed certificate.\n"
+            "\n"
+            "Off does not mean unencrypted: the connection is still encrypted,\n"
+            "the certificate simply is not checked against a trusted authority."
         )
         row5.addWidget(self.ad_validate_cert_check)
         row5.addStretch()

@@ -18,6 +18,10 @@ from operations.ad_management import ADManagementWidget
 from operations.pdf_export import PDFExportWidget
 from operations.json_export import JSONExportWidget
 
+from ui.source_combo import (
+    ACCESS_SETTING_CATEGORY, ACCESS_SETTING_KEY, PLACEHOLDER_TEXT,
+    combo_source_name, find_source_index, populate_source_combo,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +42,29 @@ class OperationsTab(QWidget):
         self.source_manager.source_modified.connect(self.on_source_modified)
 
         self.init_ui()
+
+        # Relabel the combo the moment the user flips the "show access mode"
+        # switch in Settings, instead of only after the next source change.
+        self._connect_access_setting()
+
+    def _connect_access_setting(self) -> None:
+        """
+        Watch the "show read-only / editable" setting.
+
+        Failures are swallowed: a settings backend that cannot emit signals
+        only costs the live update, never the tab itself.
+        """
+        try:
+            from utils.settings_manager import get_settings
+            get_settings().settings_changed.connect(self._on_setting_changed)
+        except Exception:
+            logger.debug("Source access labels will not update live",
+                         exc_info=True)
+
+    def _on_setting_changed(self, category: str, key: str, _value) -> None:
+        """Rebuild the combo when the access-mode switch changes."""
+        if category == ACCESS_SETTING_CATEGORY and key == ACCESS_SETTING_KEY:
+            self.on_sources_changed()
         
     def init_ui(self):
         """Initialize the user interface"""
@@ -65,7 +92,7 @@ class OperationsTab(QWidget):
         
         source_layout.addWidget(QLabel("Source:"))
         self.source_combo = QComboBox()
-        self.source_combo.addItem("(Select Source)")
+        self.source_combo.addItem(PLACEHOLDER_TEXT, None)
         self.source_combo.currentTextChanged.connect(self.on_source_changed)
         source_layout.addWidget(self.source_combo, stretch=1)
         
@@ -167,11 +194,14 @@ class OperationsTab(QWidget):
         
     def on_sources_changed(self, *args):
         """Handle source list changes (automatic refresh)"""
-        current_selection = self.source_combo.currentText()
+        # Remember the source itself, not its label: the label changes when
+        # the source is switched between read-only and editable, or when the
+        # user turns the access suffix off.
+        current_selection = combo_source_name(self.source_combo)
         self.populate_sources()
-        
+
         # Try to restore selection if possible
-        index = self.source_combo.findText(current_selection)
+        index = find_source_index(self.source_combo, current_selection)
         if index >= 0:
             self.source_combo.setCurrentIndex(index)
         else:
@@ -195,16 +225,29 @@ class OperationsTab(QWidget):
             logger.debug(f"Operation widgets refreshed after edit of: {source_name}")
 
     def populate_sources(self):
-        """Populate source combo box"""
+        """
+        Fill the source combo box.
+
+        Each row shows the access mode next to the name ("Roster (editable)")
+        and carries the plain source name as item data, so a lookup never has
+        to parse the label back apart.
+        """
         self.source_combo.blockSignals(True)
-        self.source_combo.clear()
-        self.source_combo.addItem("(Select Source)")
-        self.source_combo.addItems(self.source_manager.get_source_names())
+        populate_source_combo(self.source_combo, self.source_manager.sources)
         self.source_combo.blockSignals(False)
             
     def on_source_changed(self, source_name):
-        """Handle source selection change"""
-        if source_name == "(Select Source)":
+        """
+        Handle source selection change.
+
+        The combo shows a decorated label ("Roster (editable)"), so the text
+        Qt hands over is translated back into the source name first.  Callers
+        that pass a plain name - the tests, and the internal call above - keep
+        working, because an unknown label falls back to itself.
+        """
+        source_name = combo_source_name(self.source_combo, source_name)
+
+        if source_name == PLACEHOLDER_TEXT:
             self.current_source = None
         else:
             self.current_source = self.source_manager.get_source_by_name(source_name)

@@ -44,6 +44,11 @@ from ui.property_editor import PropertyEditorDialog
 from utils.class_name_utils import convert_class_name
 from utils.source_analysis import rename_class
 
+from ui.source_combo import (
+    ACCESS_SETTING_CATEGORY, ACCESS_SETTING_KEY, PLACEHOLDER_TEXT,
+    combo_source_name, find_source_index, populate_source_combo,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +92,28 @@ class SourcePanel(QWidget):
         self.source_manager.source_removed.connect(self.on_source_changed_external)
         self.source_manager.source_modified.connect(self.on_source_modified_external)
 
+        # Relabel the combo as soon as the "show access mode" switch changes.
+        self._connect_access_setting()
+
+    def _connect_access_setting(self) -> None:
+        """
+        Watch the "show read-only / editable" setting.
+
+        A settings backend that cannot emit signals only costs the live
+        update, so every failure here is logged and ignored.
+        """
+        try:
+            from utils.settings_manager import get_settings
+            get_settings().settings_changed.connect(self._on_setting_changed)
+        except Exception:
+            logger.debug("Source access labels will not update live",
+                         exc_info=True)
+
+    def _on_setting_changed(self, category: str, key: str, _value) -> None:
+        """Rebuild the combo when the access-mode switch changes."""
+        if category == ACCESS_SETTING_CATEGORY and key == ACCESS_SETTING_KEY:
+            self.refresh_sources()
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -101,7 +128,7 @@ class SourcePanel(QWidget):
         header.addWidget(QLabel(f"<b>{title}</b>"))
 
         self.source_combo = QComboBox()
-        self.source_combo.addItem("(Select Source)")
+        self.source_combo.addItem(PLACEHOLDER_TEXT, None)
         self.source_combo.currentTextChanged.connect(self.on_source_changed)
         header.addWidget(self.source_combo, stretch=1)
 
@@ -268,13 +295,13 @@ class SourcePanel(QWidget):
 
     def refresh_sources(self) -> None:
         """Refresh the list of available sources, keeping the selection."""
-        current = self.source_combo.currentText()
+        # Remember the source, not the label - the label changes with the
+        # access mode and with the "show access mode" setting.
+        current = combo_source_name(self.source_combo)
         self.source_combo.blockSignals(True)
-        self.source_combo.clear()
-        self.source_combo.addItem("(Select Source)")
-        self.source_combo.addItems(self.source_manager.get_source_names())
+        populate_source_combo(self.source_combo, self.source_manager.sources)
 
-        index = self.source_combo.findText(current)
+        index = find_source_index(self.source_combo, current)
         if index >= 0:
             self.source_combo.setCurrentIndex(index)
         else:
@@ -286,8 +313,16 @@ class SourcePanel(QWidget):
         self.source_combo.blockSignals(False)
 
     def on_source_changed(self, source_name: str) -> None:
-        """Handle source selection change."""
-        if source_name == "(Select Source)":
+        """
+        Handle source selection change.
+
+        The combo shows "Roster (editable)"; this translates the label back
+        into the source name.  A plain name that is not in the list is passed
+        through unchanged, so direct calls keep working.
+        """
+        source_name = combo_source_name(self.source_combo, source_name)
+
+        if source_name == PLACEHOLDER_TEXT:
             self.current_source = None
             self.tree.clear()
             self.stats_label.setText("")

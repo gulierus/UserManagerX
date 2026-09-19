@@ -122,7 +122,8 @@ class HomeDirectoryTemplateDialog(QDialog):
         help_label = QLabel(
             "<b>Placeholders</b><br>"
             "<code>{first_name}</code>, <code>{last_name}</code>, "
-            "<code>{username}</code>, <code>{class_name}</code><br>"
+            "<code>{username}</code>, <code>{class_name}</code>, "
+            "<code>{enrollment_year}</code><br>"
             "<code>{last_name:1}</code> — the first part of a compound surname "
             "&nbsp;·&nbsp; <code>{last_name:-1}</code> — the last part<br>"
             "<code>{first_name:1:3}</code> — the first 3 letters of the first "

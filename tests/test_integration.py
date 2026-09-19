@@ -100,8 +100,44 @@ def dispose(qapp, *widgets):
 
 
 def combo_items(combo):
+    """
+    The sources a combo box offers, in order.
+
+    Source combos show the access mode next to the name ("Roster (editable)")
+    and keep the plain source name in the item data, so this returns the data
+    where there is one and the visible text otherwise - which is what the
+    placeholder row and the non-source combos need.  The decoration itself is
+    covered by tests/test_source_combo.py.
+    """
+    names = []
+    for index in range(combo.count()):
+        data = combo.itemData(index)
+        names.append(data if isinstance(data, str) and data else combo.itemText(index))
+    return names
+
+
+def combo_labels(combo):
     """The visible texts of a QComboBox, in order."""
     return [combo.itemText(i) for i in range(combo.count())]
+
+
+def select_source(combo, name):
+    """
+    Select a source in a source combo box by its name.
+
+    ``setCurrentText`` cannot be used any more: the visible text carries the
+    access mode, so the plain name matches no row.
+    """
+    from ui.source_combo import find_source_index
+    index = find_source_index(combo, name)
+    assert index >= 0, f"{name!r} is not in the combo: {combo_labels(combo)}"
+    combo.setCurrentIndex(index)
+
+
+def selected_source(combo):
+    """The name of the source a combo box currently shows."""
+    from ui.source_combo import combo_source_name
+    return combo_source_name(combo)
 
 
 def list_items(widget):
@@ -576,7 +612,7 @@ class TestOperationsTabSourceSelection:
         )
         source_manager.add_source(source)
 
-        ops_tab.source_combo.setCurrentText("Roster")
+        select_source(ops_tab.source_combo, "Roster")
 
         assert ops_tab.current_source is source
         assert ops_tab.ad_widget.current_source is source
@@ -592,9 +628,9 @@ class TestOperationsTabSourceSelection:
             self, ops_tab, source_manager):
         """Going back to '(Select Source)' must disarm every operation widget."""
         source_manager.add_source(build_source("Roster", [("6.A", [("Jan", "Novák")])]))
-        ops_tab.source_combo.setCurrentText("Roster")
+        select_source(ops_tab.source_combo, "Roster")
 
-        ops_tab.source_combo.setCurrentText("(Select Source)")
+        select_source(ops_tab.source_combo, "(Select Source)")
 
         assert ops_tab.current_source is None
         assert ops_tab.ad_widget.current_source is None
@@ -614,8 +650,8 @@ class TestOperationsTabSourceSelection:
         source_manager.add_source(first)
         source_manager.add_source(second)
 
-        ops_tab.source_combo.setCurrentText("First")
-        ops_tab.source_combo.setCurrentText("Second")
+        select_source(ops_tab.source_combo, "First")
+        select_source(ops_tab.source_combo, "Second")
 
         assert ops_tab.current_source is second
         assert ops_tab.pdf_widget.current_source is second
@@ -627,7 +663,7 @@ class TestOperationsTabSourceSelection:
         source_manager.add_source(
             build_source("Roster", [("6.A", [("Jan", "Novák"), ("Eva", "Malá")])])
         )
-        ops_tab.source_combo.setCurrentText("Roster")
+        select_source(ops_tab.source_combo, "Roster")
         rows = ops_tab.ad_widget.person_table.rowCount()
         classes = list_items(ops_tab.pdf_widget.class_list)
 
@@ -661,11 +697,11 @@ class TestOperationsTabSourceSelection:
         """Adding another source must not steal the user's current choice."""
         keep = build_source("Keep", [("6.A", [("Jan", "Novák")])])
         source_manager.add_source(keep)
-        ops_tab.source_combo.setCurrentText("Keep")
+        select_source(ops_tab.source_combo, "Keep")
 
         source_manager.add_source(build_source("Other", [("9.Z", [])]))
 
-        assert ops_tab.source_combo.currentText() == "Keep"
+        assert selected_source(ops_tab.source_combo) == "Keep"
         assert ops_tab.current_source is keep
         assert ops_tab.ad_widget.current_source is keep
 
@@ -685,9 +721,9 @@ class TestOperationsTabSourceSelection:
         source = build_source(name, [("VI.A", [("Šárka", "Nováková")])])
         source_manager.add_source(source)
 
-        ops_tab.source_combo.setCurrentText(name)
+        select_source(ops_tab.source_combo, name)
 
-        assert ops_tab.source_combo.currentText() == name
+        assert selected_source(ops_tab.source_combo) == name
         assert ops_tab.current_source is source
         assert ops_tab.json_widget.current_source is source
 
@@ -695,10 +731,10 @@ class TestOperationsTabSourceSelection:
             self, ops_tab, source_manager):
         """A stale entry must clear the widgets instead of keeping old data."""
         source_manager.add_source(build_source("Roster", [("6.A", [("Jan", "Novák")])]))
-        ops_tab.source_combo.setCurrentText("Roster")
+        select_source(ops_tab.source_combo, "Roster")
 
         ops_tab.source_combo.addItem("Ghost")
-        ops_tab.source_combo.setCurrentText("Ghost")
+        select_source(ops_tab.source_combo, "Ghost")
 
         assert ops_tab.current_source is None
         assert ops_tab.ad_widget.current_source is None
@@ -720,11 +756,11 @@ class TestOperationsTabSourceSelection:
         """A deleted source must not stay operable behind '(Select Source)'."""
         source = build_source("Roster", [("6.A", [("Jan", "Novák")])])
         source_manager.add_source(source)
-        ops_tab.source_combo.setCurrentText("Roster")
+        select_source(ops_tab.source_combo, "Roster")
 
         source_manager.remove_source(source)
 
-        assert ops_tab.source_combo.currentText() == "(Select Source)"
+        assert selected_source(ops_tab.source_combo) == "(Select Source)"
         assert ops_tab.current_source is None
         assert ops_tab.ad_widget.current_source is None
         assert ops_tab.pdf_widget.current_source is None
@@ -736,7 +772,7 @@ class TestOperationsTabSourceSelection:
         """Editing a source on tab 2 must be visible on tab 3 immediately."""
         source = build_source("Roster", [("6.A", [("Jan", "Novák")])])
         source_manager.add_source(source)
-        ops_tab.source_combo.setCurrentText("Roster")
+        select_source(ops_tab.source_combo, "Roster")
 
         source.add_class(Class(name="6.B", persons=[Person("Eva", "Malá", "6.B")]))
         source_manager.notify_source_modified("Roster")
@@ -816,7 +852,7 @@ class TestSourceSelectionTab:
     def test_choosing_a_source_type_shows_the_matching_page(
             self, selection_tab, index, label, attribute):
         """Selecting a type by text switches the stack to its widget."""
-        selection_tab.source_combo.setCurrentText(label)
+        select_source(selection_tab.source_combo, label)
         assert selection_tab.config_stack.currentIndex() == index
         assert selection_tab.config_stack.currentWidget() is \
             getattr(selection_tab, attribute)
@@ -983,8 +1019,8 @@ class TestSignalPlumbing:
 
         left = window.comparison_tab.left_panel
         right = window.comparison_tab.right_panel
-        left.source_combo.setCurrentText("Alpha")
-        right.source_combo.setCurrentText("Beta")
+        select_source(left.source_combo, "Alpha")
+        select_source(right.source_combo, "Beta")
 
         alpha.classes[0].add_person(Person("Petr", "Černý", "6.A"))
         window.source_manager.notify_source_modified("Alpha")
@@ -998,14 +1034,14 @@ class TestSignalPlumbing:
         alpha = build_source("Alpha", [("6.A", [("Jan", "Novák")])])
         window.source_manager.add_source(alpha)
         panel = window.comparison_tab.left_panel
-        panel.source_combo.setCurrentText("Alpha")
+        select_source(panel.source_combo, "Alpha")
         assert panel.current_source is alpha
 
         window.source_manager.remove_source(alpha)
 
         assert panel.current_source is None
         assert panel.tree.topLevelItemCount() == 0
-        assert panel.source_combo.currentText() == "(Select Source)"
+        assert selected_source(panel.source_combo) == "(Select Source)"
         assert panel.stats_label.text() == ""
 
     def test_generating_credentials_notifies_the_comparison_panels(self, window):
@@ -1016,7 +1052,7 @@ class TestSignalPlumbing:
         received = []
         window.source_manager.source_modified.connect(received.append)
 
-        window.operations_tab.source_combo.setCurrentText("Roster")
+        select_source(window.operations_tab.source_combo, "Roster")
         window.operations_tab.ad_widget.generate_all_credentials()
 
         assert received == ["Roster"]
@@ -1129,7 +1165,7 @@ class TestSchoolYearRollover:
 
         # 6 - the operations tab drives the credential generation
         source_manager.add_source(merged)
-        ops_tab.source_combo.setCurrentText("Roster 2025/26")
+        select_source(ops_tab.source_combo, "Roster 2025/26")
         assert ops_tab.ad_widget.current_source is merged
         ops_tab.ad_widget.generate_all_credentials()
 
@@ -1196,7 +1232,7 @@ class TestSchoolYearRollover:
         editable = SourceManager.merge_sources(backup, backup, "union", "Editable")
         source_manager.add_source(editable)
 
-        ops_tab.source_combo.setCurrentText("Editable")
+        select_source(ops_tab.source_combo, "Editable")
         ops_tab.ad_widget.generate_all_credentials()
 
         restored = source_from_dict(source_to_dict(editable), readonly=True)
@@ -1210,7 +1246,7 @@ class TestSchoolYearRollover:
         """The read-only flag reaches all the way into the operations tab."""
         _, backup = rollover_sources
         source_manager.add_source(backup)
-        ops_tab.source_combo.setCurrentText("Backup-2025")
+        select_source(ops_tab.source_combo, "Backup-2025")
 
         ops_tab.ad_widget.generate_all_credentials()
 
@@ -1223,7 +1259,7 @@ class TestSchoolYearRollover:
         _, backup = rollover_sources
         editable = SourceManager.merge_sources(backup, backup, "union", "Editable")
         source_manager.add_source(editable)
-        ops_tab.source_combo.setCurrentText("Editable")
+        select_source(ops_tab.source_combo, "Editable")
 
         ops_tab.ad_widget.generate_all_credentials()
         first = [p.ad_username for p in editable.get_all_persons()]
@@ -1540,7 +1576,7 @@ def test_diacritics_are_folded_before_they_reach_active_directory(
     """Credential generation has to produce plain ASCII sAMAccountNames."""
     source = build_source("Roster", [("6.A", [(first, last)])])
     source_manager.add_source(source)
-    ops_tab.source_combo.setCurrentText("Roster")
+    select_source(ops_tab.source_combo, "Roster")
 
     ops_tab.ad_widget.generate_all_credentials()
 

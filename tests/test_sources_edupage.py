@@ -2173,7 +2173,93 @@ def test_ad_load_strips_the_trida_prefix_from_the_class_name(ad_widget, ad_direc
     assert [cls.name for cls in source.classes] == ["6A"]
     assert source.readonly is True
     assert source.source_type == "active_directory"
-    assert source.name == "AD-ldap://dc.example.com"
+    # The name is whatever the user confirmed in the naming dialog.
+    assert source.name == "test-value"
+
+
+@pytest.mark.gui
+def test_ad_load_suggests_a_readable_name_instead_of_the_connection_url(
+        ad_widget, ad_directory, dialogs):
+    """
+    Version 25, point 26.
+
+    The suggested name is built from the directory and the loaded branch, not
+    pasted together from the raw LDAP URL.
+    """
+    ad_directory.add_ou("Trida-6A")
+
+    ad_widget.on_load()
+
+    assert dialogs.text_defaults == ["AD example.com"]
+    suggestion = dialogs.text_defaults[0]
+    assert "ldap://" not in suggestion and "dc=" not in suggestion.lower()
+
+
+@pytest.mark.gui
+def test_ad_load_suggests_a_free_name_when_one_is_already_taken(
+        ad_widget, ad_directory, dialogs, make_source):
+    """Loading the same directory twice must not suggest the same name twice."""
+    ad_directory.add_ou("Trida-6A")
+    taken = make_source(name="AD example.com", classes=[("6.A", 1)])
+    ad_widget.source_manager.add_source(taken)
+
+    ad_widget.on_load()
+
+    assert dialogs.text_defaults == ["AD example.com (2)"]
+
+
+@pytest.mark.gui
+def test_ad_load_is_abandoned_when_the_naming_dialog_is_cancelled(
+        ad_widget, ad_directory, dialogs):
+    """Cancelling the name discards the whole load."""
+    ad_directory.add_ou("Trida-6A")
+    dialogs.text_answer = ("", False)
+
+    ad_widget.on_load()
+
+    assert ad_widget.source_manager.sources == []
+    assert "Success" not in dialogs.titles()
+
+
+@pytest.mark.gui
+def test_ad_load_replaces_a_source_when_the_user_confirms_the_duplicate_name(
+        ad_widget, ad_directory, dialogs, make_source):
+    """
+    Answering "Replace it?" with Yes removes the old source.
+
+    Two sources with one name are indistinguishable to every lookup by name,
+    so the fresh data would otherwise be unreachable.
+    """
+    ad_directory.add_ou("Trida-6A")
+    old = make_source(name="test-value", classes=[("9.C", 1)])
+    ad_widget.source_manager.add_source(old)
+
+    ad_widget.on_load()
+
+    names = [s.name for s in ad_widget.source_manager.sources]
+    assert names == ["test-value"]
+    assert ad_widget.source_manager.sources[0] is not old
+
+
+@pytest.mark.gui
+def test_ad_load_keeps_asking_when_the_user_refuses_to_replace(
+        ad_widget, ad_directory, dialogs, make_source, monkeypatch):
+    """Answering "Replace it?" with No returns to the name prompt."""
+    from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+    ad_directory.add_ou("Trida-6A")
+    ad_widget.source_manager.add_source(
+        make_source(name="taken", classes=[("9.C", 1)]))
+
+    answers = iter([("taken", True), ("free", True)])
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: next(answers)))
+    dialogs.question_answer = QMessageBox.StandardButton.No
+
+    ad_widget.on_load()
+
+    names = sorted(s.name for s in ad_widget.source_manager.sources)
+    assert names == ["free", "taken"]
 
 
 @pytest.mark.gui

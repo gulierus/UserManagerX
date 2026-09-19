@@ -87,6 +87,9 @@ class DialogRecorder:
         self.exec_result = QDialog.DialogCode.Accepted
         #: Buttons added with QMessageBox.addButton(); the stub clicks this index
         self.clicked_button_index = 0
+        #: Default text each QInputDialog.getText() was pre-filled with, in
+        #: call order - that is the name the application *suggested*.
+        self.text_defaults = []
 
     # -- queries --------------------------------------------------------
 
@@ -115,6 +118,7 @@ class DialogRecorder:
     def clear(self):
         """Forget everything recorded so far."""
         self.calls.clear()
+        self.text_defaults.clear()
 
 
 @pytest.fixture
@@ -164,7 +168,9 @@ def dialogs(monkeypatch):
     def _get_text(*args, **kwargs):
         title = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
         label = args[2] if len(args) > 2 and isinstance(args[2], str) else ""
+        default = args[4] if len(args) > 4 else kwargs.get("text", "")
         recorder.calls.append(("get_text", title, label))
+        recorder.text_defaults.append(default if isinstance(default, str) else "")
         return recorder.text_answer
 
     def _get_item(*args, **kwargs):
