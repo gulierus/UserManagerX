@@ -156,6 +156,22 @@ def _operation_digits(value: str, _argument: str) -> str:
     return ''.join(character for character in value if character.isdigit())
 
 
+def _operation_ascii(value: str, _argument: str) -> str:
+    """
+    The value without diacritics.
+
+    ``Novák`` -> ``Novak``.  Needed wherever the result becomes part of an
+    address: a sign-in name or a mail alias must be plain ASCII.
+    """
+    from utils.ad_utils import remove_diacritics
+    return remove_diacritics(value)
+
+
+def _operation_alnum(value: str, _argument: str) -> str:
+    """Only the letters and digits, everything else removed."""
+    return ''.join(character for character in value if character.isalnum())
+
+
 #: ``name -> (function, takes_argument, help text)``.
 OPERATIONS: Dict[str, tuple] = {
     'after':  (_operation_after,  True,
@@ -172,6 +188,8 @@ OPERATIONS: Dict[str, tuple] = {
     'strip':  (lambda value, _arg: value.strip(), False,
                "without surrounding spaces"),
     'digits': (_operation_digits, False, "only the digits"),
+    'ascii':  (_operation_ascii,  False, "without diacritics (Novák -> Novak)"),
+    'alnum':  (_operation_alnum,  False, "only letters and digits"),
 }
 
 
@@ -313,6 +331,40 @@ def validate(template: str, fields: Mapping[str, str]) -> List[str]:
     return problems
 
 
+def empty_placeholders(template: str, values: Mapping[str, str]) -> List[str]:
+    """
+    Which of a template's placeholders resolve to nothing for these values.
+
+    A name built from an empty placeholder is not an error the engine can see -
+    ``Trida-{grade}`` renders perfectly well as ``Trida-`` for a class called
+    "Zaci" - but it is almost never what the user meant, and every such class
+    would end up with the *same* name.  The caller decides what to do about it;
+    this only reports it.
+
+    Args:
+        template: The template text.
+        values: ``field -> value``.
+
+    Returns:
+        The field names, in the order they appear in the template, without
+        duplicates.  Empty when every placeholder produced something.
+    """
+    empty: List[str] = []
+    for match in _PLACEHOLDER_RE.finditer(template or ''):
+        field_name = match.group(1)
+        if field_name not in values or field_name in empty:
+            continue
+        try:
+            rendered = _apply_operations(str(values.get(field_name) or ''),
+                                         match.group(2))
+        except TemplateError:
+            # A broken operation is a different problem, reported by validate().
+            continue
+        if not rendered.strip():
+            empty.append(field_name)
+    return empty
+
+
 def describe_operations() -> str:
     """One line of help listing the operations, for a dialog."""
     return " · ".join(f"|{name} {entry[2]}" for name, entry in
@@ -438,4 +490,63 @@ def class_values(school_class, enrollment_year=None) -> Dict[str, str]:
         'letter': parts.letter or '',
         'enrollment_year': str(year) if year else '',
         'school_year': school_year,
+    }
+
+
+#: ``field -> description`` for a template naming an account after a person.
+PERSON_FIELDS: Dict[str, str] = {
+    'first_name': "The person's first name (Jan)",
+    'last_name': "The person's surname (Novák)",
+    'class_name': "The class the person is in (6.A)",
+    'grade': "The class number in Arabic digits (6.A -> 6)",
+    'roman': "The class number in Roman numerals (6.A -> VI)",
+    'letter': "The section letter (6.A -> A)",
+    'enrollment_year': "The year the class started the first grade (2020)",
+    'username': "The Active Directory user name, when one was generated",
+    'domain': "The tenant's domain (skola.onmicrosoft.com)",
+}
+
+
+def person_values(person, domain: str = "") -> Dict[str, str]:
+    """
+    Build the field dictionary for one person.
+
+    Used by the templates that build a sign-in name, an email address and a
+    display name for Microsoft 365.
+
+    Args:
+        person: A :class:`models.Person`.
+        domain: The tenant domain, which the person does not know about.
+
+    Returns:
+        ``field -> text``.  Every key of :data:`PERSON_FIELDS` is present, so a
+        template can never fail because a field happens to be empty.
+    """
+    from utils.class_name_utils import int_to_roman, parse_class_name
+
+    class_name = str(getattr(person, 'class_name', '') or '').strip()
+    parts = parse_class_name(class_name)
+
+    roman = ''
+    if parts.has_numeral:
+        try:
+            roman = int_to_roman(parts.numeral_value)
+        except ValueError:
+            roman = ''
+
+    year = getattr(person, 'enrollment_year', None)
+    if not year:
+        metadata = getattr(person, 'metadata', None) or {}
+        year = metadata.get('enrollment_year')
+
+    return {
+        'first_name': str(getattr(person, 'first_name', '') or '').strip(),
+        'last_name': str(getattr(person, 'last_name', '') or '').strip(),
+        'class_name': class_name,
+        'grade': str(parts.numeral_value) if parts.has_numeral else '',
+        'roman': roman,
+        'letter': parts.letter or '',
+        'enrollment_year': str(year) if year else '',
+        'username': str(getattr(person, 'ad_username', '') or '').strip(),
+        'domain': str(domain or '').strip(),
     }

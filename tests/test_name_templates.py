@@ -287,3 +287,88 @@ class TestClassValues:
         import re
         assert re.fullmatch(r"\d{4}/\d{4}",
                             class_values(school_class)['school_year'])
+
+
+class TestEmptyPlaceholders:
+    """
+    A placeholder that resolves to nothing.
+
+    ``Trida-{grade}`` renders perfectly well as ``Trida-`` for a class with no
+    number - and every such class would then get the same name.
+    """
+
+    def test_a_template_whose_fields_are_all_filled_reports_nothing(self):
+        from utils.name_templates import empty_placeholders
+        assert empty_placeholders("{display_name}", VALUES) == []
+
+    def test_an_empty_field_is_reported(self):
+        from utils.name_templates import empty_placeholders
+        assert empty_placeholders("x{mail}", VALUES) == ['mail']
+
+    def test_an_operation_that_yields_nothing_is_reported(self):
+        from utils.name_templates import empty_placeholders
+        assert empty_placeholders("{display_name|after:ZZZ}", VALUES) == \
+            ['display_name']
+
+    def test_each_field_is_reported_once(self):
+        from utils.name_templates import empty_placeholders
+        assert empty_placeholders("{mail}-{mail}", VALUES) == ['mail']
+
+    def test_an_unknown_field_is_not_reported_here(self):
+        # validate() reports that; this only looks at what resolved to nothing.
+        from utils.name_templates import empty_placeholders
+        assert empty_placeholders("{nope}", VALUES) == []
+
+    def test_a_template_without_placeholders_reports_nothing(self):
+        from utils.name_templates import empty_placeholders
+        assert empty_placeholders("fixed", VALUES) == []
+
+
+class TestPersonValues:
+    """The dictionary built from a person, for the Microsoft 365 templates."""
+
+    @pytest.fixture
+    def one(self, make_person):
+        return make_person("Jan", "Novák", "6.A", ad_username="novakjan")
+
+    def test_every_documented_field_is_present(self, one):
+        from utils.name_templates import PERSON_FIELDS, person_values
+        assert set(person_values(one)) == set(PERSON_FIELDS)
+
+    def test_the_parts_of_the_class_are_derived(self, one):
+        from utils.name_templates import person_values
+        values = person_values(one)
+        assert (values['grade'], values['roman'], values['letter']) == \
+            ("6", "VI", "A")
+
+    def test_the_domain_is_supplied_by_the_caller(self, one):
+        from utils.name_templates import person_values
+        assert person_values(one, "skola.cz")['domain'] == "skola.cz"
+
+    def test_a_sign_in_name_renders_without_diacritics(self, make_person):
+        from utils.name_templates import person_values
+        values = person_values(make_person("Žofie", "Křížová", "6.A"),
+                               "skola.cz")
+        assert render("{last_name|ascii|lower|alnum}{first_name[0]|ascii|lower}"
+                      "@{domain}", values) == "krizovaz@skola.cz"
+
+    def test_the_enrollment_year_is_read_from_the_metadata(self, one):
+        from utils.name_templates import person_values
+        one.metadata['enrollment_year'] = 2020
+        assert person_values(one)['enrollment_year'] == "2020"
+
+
+class TestAsciiAndAlnum:
+    """The two operations the address templates need."""
+
+    def test_diacritics_are_removed(self):
+        assert render("{display_name|ascii}", {'display_name': "Žofie Křížová"}) \
+            == "Zofie Krizova"
+
+    def test_only_letters_and_digits_survive_alnum(self):
+        assert render("{display_name|alnum}", {'display_name': "6.A-2020"}) == \
+            "6A2020"
+
+    def test_they_chain(self):
+        assert render("{display_name|ascii|alnum|lower}",
+                      {'display_name': "Křížová 9.Č"}) == "krizova9c"

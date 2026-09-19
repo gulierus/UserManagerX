@@ -356,6 +356,17 @@ class Person:
     _ad_ou_path: Optional[str] = field(default=None, init=False, repr=False)
     _ad_dn: Optional[str] = field(default=None, init=False, repr=False)
     
+    # Microsoft 365 attributes (private fields with properties).
+    #
+    # Deliberately separate from the Active Directory ones: a person can exist
+    # in both directories with different values, and point 21 requires the
+    # Microsoft 365 table not to show Active Directory fields.
+    _m365_user_principal_name: Optional[str] = field(default=None, init=False, repr=False)
+    _m365_display_name: Optional[str] = field(default=None, init=False, repr=False)
+    _m365_mail_nickname: Optional[str] = field(default=None, init=False, repr=False)
+    _m365_password: Optional[str] = field(default=None, init=False, repr=False)
+    _m365_usage_location: Optional[str] = field(default=None, init=False, repr=False)
+
     # Home Directory (private field with property)
     _home_directory: Optional[str] = field(default=None, init=False, repr=False)
     _home_drive: Optional[str] = field(default=None, init=False, repr=False)
@@ -375,6 +386,12 @@ class Person:
     ad_status: ADStatus = field(default=ADStatus.UNKNOWN)
     ad_version: Optional[str] = None
     ad_last_sync: Optional[datetime] = None
+
+    # Microsoft 365 synchronization tracking.  The object id is assigned by
+    # Microsoft and never edited here, so it needs no dirty tracking.
+    m365_object_id: Optional[str] = None
+    m365_status: 'M365Status' = None
+    m365_last_sync: Optional[datetime] = None
     
     # Additional metadata
     metadata: Dict = field(default_factory=dict)
@@ -386,6 +403,9 @@ class Person:
     #: The status held before the first local edit, so undoing every edit can
     #: restore it instead of guessing between "Identical" and "Synchronised".
     _status_before_edit: Optional['ADStatus'] = field(default=None, repr=False)
+    #: The same, for Microsoft 365.
+    _m365_status_before_edit: Optional['M365Status'] = field(default=None,
+                                                             repr=False)
     
     def __init__(self, first_name: str, last_name: str, class_name: str,
                  ad_username: Optional[str] = None,
@@ -397,6 +417,13 @@ class Person:
                  ad_dn: Optional[str] = None,
                  home_directory: Optional[str] = None,
                  home_drive: Optional[str] = None,
+                 m365_user_principal_name: Optional[str] = None,
+                 m365_display_name: Optional[str] = None,
+                 m365_mail_nickname: Optional[str] = None,
+                 m365_password: Optional[str] = None,
+                 m365_usage_location: Optional[str] = None,
+                 m365_object_id: Optional[str] = None,
+                 m365_status=None,
                  group_memberships: Optional[List[ADGroup]] = None,
                  password_must_change: bool = False,
                  password_cannot_change: bool = False,
@@ -411,6 +438,7 @@ class Person:
         self._original_values = {}
         self._dirty_fields = set()
         self._status_before_edit = None
+        self._m365_status_before_edit = None
         self._tracking_enabled = False  # Disable during initialization
         
         # Set values without triggering dirty tracking
@@ -425,6 +453,13 @@ class Person:
         self._ad_ou_path = ad_ou_path
         self._ad_dn = ad_dn
         
+        # Microsoft 365
+        self._m365_user_principal_name = m365_user_principal_name
+        self._m365_display_name = m365_display_name
+        self._m365_mail_nickname = m365_mail_nickname
+        self._m365_password = m365_password
+        self._m365_usage_location = m365_usage_location
+
         # Home Directory
         self._home_directory = home_directory
         self._home_drive = home_drive
@@ -443,6 +478,13 @@ class Person:
         self.ad_status = ad_status
         self.ad_version = ad_version
         self.ad_last_sync = ad_last_sync
+
+        from models_m365 import M365Status
+        self.m365_object_id = m365_object_id
+        self.m365_status = m365_status or M365Status.UNKNOWN
+        self.m365_last_sync = None
+        self._m365_status_before_edit = None
+
         self.metadata = metadata or {}
         
         # Capture original values
@@ -685,6 +727,71 @@ class Person:
         else:
             self._account_enabled = value
     
+    @property
+    def m365_user_principal_name(self) -> Optional[str]:
+        """The sign-in name in Microsoft 365 (novakjan@skola.cz)"""
+        return self._m365_user_principal_name
+
+    @m365_user_principal_name.setter
+    def m365_user_principal_name(self, value: Optional[str]):
+        if self._tracking_enabled and self._m365_user_principal_name != value:
+            self._m365_user_principal_name = value
+            self._mark_dirty('m365_user_principal_name')
+        else:
+            self._m365_user_principal_name = value
+
+    @property
+    def m365_display_name(self) -> Optional[str]:
+        """The name Microsoft 365 shows for this person"""
+        return self._m365_display_name
+
+    @m365_display_name.setter
+    def m365_display_name(self, value: Optional[str]):
+        if self._tracking_enabled and self._m365_display_name != value:
+            self._m365_display_name = value
+            self._mark_dirty('m365_display_name')
+        else:
+            self._m365_display_name = value
+
+    @property
+    def m365_mail_nickname(self) -> Optional[str]:
+        """The alias Microsoft 365 builds the address from"""
+        return self._m365_mail_nickname
+
+    @m365_mail_nickname.setter
+    def m365_mail_nickname(self, value: Optional[str]):
+        if self._tracking_enabled and self._m365_mail_nickname != value:
+            self._m365_mail_nickname = value
+            self._mark_dirty('m365_mail_nickname')
+        else:
+            self._m365_mail_nickname = value
+
+    @property
+    def m365_password(self) -> Optional[str]:
+        """The Microsoft 365 password this application generated"""
+        return self._m365_password
+
+    @m365_password.setter
+    def m365_password(self, value: Optional[str]):
+        if self._tracking_enabled and self._m365_password != value:
+            self._m365_password = value
+            self._mark_dirty('m365_password')
+        else:
+            self._m365_password = value
+
+    @property
+    def m365_usage_location(self) -> Optional[str]:
+        """Two-letter country code, required before a licence can be assigned"""
+        return self._m365_usage_location
+
+    @m365_usage_location.setter
+    def m365_usage_location(self, value: Optional[str]):
+        if self._tracking_enabled and self._m365_usage_location != value:
+            self._m365_usage_location = value
+            self._mark_dirty('m365_usage_location')
+        else:
+            self._m365_usage_location = value
+
     def _mark_dirty(self, field_name: str):
         """
         Record that a field was edited, and keep the AD status in step.
@@ -710,7 +817,7 @@ class Person:
 
         if changed:
             self._dirty_fields.add(field_name)
-            self._note_local_change()
+            self._note_local_change(field_name)
         else:
             # Undoing a change must clear the pending state again.  Without
             # this, a person whose edit was reverted stayed "differs" for ever
@@ -719,18 +826,58 @@ class Person:
             if not self._dirty_fields:
                 self._note_local_change_undone()
 
-    def _note_local_change(self) -> None:
-        """A field was edited: the person no longer agrees with the directory."""
-        if self.ad_status.is_settled:
+    #: Fields that exist only in Active Directory.
+    AD_ONLY_FIELDS = frozenset({
+        'ad_username', 'ad_password', 'ad_display_name', 'ad_email',
+        'ad_description', 'ad_ou_path', 'home_directory', 'home_drive',
+        'group_memberships',
+    })
+
+    #: Fields that exist only in Microsoft 365.
+    M365_ONLY_FIELDS = frozenset({
+        'm365_user_principal_name', 'm365_display_name', 'm365_mail_nickname',
+        'm365_password', 'm365_usage_location',
+    })
+
+    def _affects_ad(self, field_name: str) -> bool:
+        """Whether editing this field makes the person differ from AD."""
+        return field_name not in self.M365_ONLY_FIELDS
+
+    def _affects_m365(self, field_name: str) -> bool:
+        """Whether editing this field makes the person differ from Microsoft 365."""
+        return field_name not in self.AD_ONLY_FIELDS
+
+    def _note_local_change(self, field_name: str) -> None:
+        """
+        A field was edited, so the person no longer agrees with a directory.
+
+        Which directory depends on the field: a name or an account flag is
+        shared and moves both, while ``ad_email`` moves only Active Directory
+        and ``m365_display_name`` only Microsoft 365.
+        """
+        from models_m365 import M365Status
+
+        if self._affects_ad(field_name) and self.ad_status.is_settled:
             self._status_before_edit = self.ad_status
             self.ad_status = ADStatus.DIFFERS_FROM_AD
 
+        if self._affects_m365(field_name) and self.m365_status.is_settled:
+            self._m365_status_before_edit = self.m365_status
+            self.m365_status = M365Status.DIFFERS_FROM_M365
+
     def _note_local_change_undone(self) -> None:
-        """Every edit was undone: go back to the status held before them."""
+        """Every edit was undone: go back to the statuses held before them."""
+        from models_m365 import M365Status
+
         if (self.ad_status is ADStatus.DIFFERS_FROM_AD
                 and self._status_before_edit is not None):
             self.ad_status = self._status_before_edit
             self._status_before_edit = None
+
+        if (self.m365_status is M365Status.DIFFERS_FROM_M365
+                and self._m365_status_before_edit is not None):
+            self.m365_status = self._m365_status_before_edit
+            self._m365_status_before_edit = None
     
     def _capture_original_values(self):
         """Capture current state as original values"""
@@ -751,6 +898,11 @@ class Person:
             'password_cannot_change': self._password_cannot_change,
             'password_never_expires': self._password_never_expires,
             'account_enabled': self._account_enabled,
+            'm365_user_principal_name': self._m365_user_principal_name,
+            'm365_display_name': self._m365_display_name,
+            'm365_mail_nickname': self._m365_mail_nickname,
+            'm365_password': self._m365_password,
+            'm365_usage_location': self._m365_usage_location,
         }
         self._dirty_fields.clear()
     
@@ -776,16 +928,39 @@ class Person:
     
     def reset_dirty(self):
         """
-        Clear dirty tracking after a successful synchronisation.
+        Clear dirty tracking after a successful Active Directory sync.
 
-        The person now holds what was written to the directory, so the state
-        she had before the edits is no longer relevant.
+        The person now holds what was written, so the state she had before the
+        edits is no longer relevant.
+
+        Note:
+            ``_dirty_fields`` is one set for both directories - it means
+            "edited since last written anywhere".  Synchronising to Active
+            Directory therefore also clears the flag for Microsoft 365, which
+            only matters when a person was edited for one directory and
+            synchronised to the other; the Microsoft 365 *status* is left
+            alone, so nothing claims a synchronisation that did not happen.
         """
         self._capture_original_values()
         self._status_before_edit = None
         if self._ad_dn:
             self.ad_status = ADStatus.SYNC_SUCCEEDED
             self.ad_last_sync = datetime.now()
+
+    def reset_m365_dirty(self):
+        """
+        Clear dirty tracking after a successful Microsoft 365 sync.
+
+        The counterpart of :meth:`reset_dirty`; see the note there about the
+        shared dirty set.
+        """
+        from models_m365 import M365Status
+
+        self._capture_original_values()
+        self._m365_status_before_edit = None
+        if self.m365_object_id:
+            self.m365_status = M365Status.SYNC_SUCCEEDED
+            self.m365_last_sync = datetime.now()
     
     def get_normalized_name(self) -> tuple:
         """Get normalized name for comparison"""
