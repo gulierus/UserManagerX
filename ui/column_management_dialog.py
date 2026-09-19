@@ -1,6 +1,12 @@
 """
 Column Management Dialog
 Allows users to show/hide columns, add custom columns, and delete columns
+
+:class:`ColumnVisibilityDialog` used to live inside
+``operations/ad_management.py``.  It is a plain dialog with nothing Active
+Directory about it, and the Microsoft 365 operation needs exactly the same
+window, so it moved here next to its sibling rather than being imported from
+one operation into another.
 """
 
 import logging
@@ -234,3 +240,72 @@ class ColumnManagementDialog(QDialog):
     def get_deleted_columns(self) -> List[str]:
         """Get list of deleted columns"""
         return self.deleted_columns
+
+
+class ColumnVisibilityDialog(QDialog):
+    """Dialog for selecting visible columns"""
+    
+    def __init__(self, columns: list, visible_columns: list, parent=None):
+        super().__init__(parent)
+        self.columns = columns
+        self.visible_columns = visible_columns.copy()
+        self.setWindowTitle("Select Visible Columns")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("Select which columns to display:"))
+        
+        self.list_widget = QListWidget()
+        
+        for col in self.columns:
+            item = QListWidgetItem(col)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if col in self.visible_columns 
+                else Qt.CheckState.Unchecked
+            )
+            self.list_widget.addItem(item)
+        
+        layout.addWidget(self.list_widget)
+        
+        # Select/Deselect all buttons
+        btn_layout = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(self.select_all)
+        btn_layout.addWidget(select_all_btn)
+        
+        deselect_all_btn = QPushButton("Deselect All")
+        deselect_all_btn.clicked.connect(self.deselect_all)
+        btn_layout.addWidget(deselect_all_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def select_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.CheckState.Checked)
+    
+    def deselect_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+    
+    def get_visible_columns(self) -> list:
+        """Get list of selected column names"""
+        visible = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                visible.append(item.text())
+        return visible

@@ -25,6 +25,7 @@ from services.ad_services import (
     PersonsSyncService, ConflictStrategy
 )
 from services.ad_validator import ADValidator
+from ui.column_management_dialog import ColumnVisibilityDialog
 from ui.property_editor import PropertyEditorDialog
 from utils.ad_utils import generate_username, generate_password, generate_display_name
 from ui.bulk_edit_dialog import BulkEditDialog
@@ -124,75 +125,6 @@ class ADDiscoveryThread(QThread):
     def stop(self):
         """Stop the discovery thread"""
         self._is_running = False
-
-
-class ColumnVisibilityDialog(QDialog):
-    """Dialog for selecting visible columns"""
-    
-    def __init__(self, columns: list, visible_columns: list, parent=None):
-        super().__init__(parent)
-        self.columns = columns
-        self.visible_columns = visible_columns.copy()
-        self.setWindowTitle("Select Visible Columns")
-        self.setModal(True)
-        self.setMinimumWidth(400)
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        
-        layout.addWidget(QLabel("Select which columns to display:"))
-        
-        self.list_widget = QListWidget()
-        
-        for col in self.columns:
-            item = QListWidgetItem(col)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if col in self.visible_columns 
-                else Qt.CheckState.Unchecked
-            )
-            self.list_widget.addItem(item)
-        
-        layout.addWidget(self.list_widget)
-        
-        # Select/Deselect all buttons
-        btn_layout = QHBoxLayout()
-        select_all_btn = QPushButton("Select All")
-        select_all_btn.clicked.connect(self.select_all)
-        btn_layout.addWidget(select_all_btn)
-        
-        deselect_all_btn = QPushButton("Deselect All")
-        deselect_all_btn.clicked.connect(self.deselect_all)
-        btn_layout.addWidget(deselect_all_btn)
-        
-        layout.addLayout(btn_layout)
-        
-        # Dialog buttons
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok |
-            QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-    
-    def select_all(self):
-        for i in range(self.list_widget.count()):
-            self.list_widget.item(i).setCheckState(Qt.CheckState.Checked)
-    
-    def deselect_all(self):
-        for i in range(self.list_widget.count()):
-            self.list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
-    
-    def get_visible_columns(self) -> list:
-        """Get list of selected column names"""
-        visible = []
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                visible.append(item.text())
-        return visible
 
 
 class ConflictResolutionDialog(QDialog):

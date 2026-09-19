@@ -282,3 +282,146 @@ class M365RefreshGroupTask(AbstractProgressTask, M365TaskMixin):
         if self.is_cancelled() and self.client is not None:
             self.client.close()
             self.client = None
+
+
+class M365DiscoverTask(AbstractProgressTask, M365TaskMixin):
+    """
+    Look every person up in Microsoft 365 and record what it holds.
+
+    The counterpart of "Discover in AD": nothing is written, and the result is
+    what the Status column and the synchronisation plan are built from.
+    """
+
+    def __init__(self, credentials: M365Credentials, persons: List,
+                 config, device_code_callback: Optional[Callable] = None,
+                 task_name: str = "Microsoft 365: Discover"):
+        """
+        Args:
+            credentials: How to sign in.
+            persons: Who to look for.
+            config: The :class:`~services.m365_services.M365SyncConfig`, used
+                to work out the sign-in name of somebody who has never been
+                synchronised.
+            device_code_callback: Shows the device code, when used.
+            task_name: Shown in the progress dialog.
+        """
+        super().__init__(task_name, is_deterministic=True, can_pause=False)
+        self.credentials = credentials
+        self.persons = list(persons)
+        self.config = config
+        self._device_code_callback = device_code_callback
+
+        self.client: Optional[M365Client] = None
+        #: People whose lookup failed, as readable sentences.
+        self.errors: List[str] = []
+        self.found = 0
+        self.missing = 0
+
+    def execute(self) -> str:
+        """Sign in, then look everybody up."""
+        from services.m365_services import M365DiscoveryService
+
+        self.client = self.open_client(self.credentials,
+                                       self._device_code_callback)
+        service = M365DiscoveryService(self.client, self.config)
+
+        results = service.discover_persons(self.persons,
+                                           progress=self._on_progress)
+
+        for result in results:
+            if result.error:
+                who = (f"{result.person.first_name} "
+                       f"{result.person.last_name} "
+                       f"({result.person.class_name})")
+                self.errors.append(f"{who}: {result.error}")
+            elif result.found:
+                self.found += 1
+            else:
+                self.missing += 1
+
+        summary = (f"{self.found} found, {self.missing} not in Microsoft 365")
+        if self.errors:
+            summary += f", {len(self.errors)} could not be looked up"
+        return summary
+
+    def _on_progress(self, index: int, total: int, person) -> None:
+        """Report which person is being looked up."""
+        self.check_cancelled()
+        self.emit_progress(
+            int(100 * index / max(1, total)),
+            f"{person.first_name} {person.last_name} ({index}/{total})")
+
+    def cleanup(self) -> None:
+        """The session is of no further use once the lookups are done."""
+        if self.client is not None:
+            self.client.close()
+            self.client = None
+
+
+class M365SyncTask(AbstractProgressTask, M365TaskMixin):
+    """
+    Create the missing accounts and groups, and bring the existing ones
+    into line.
+
+    The plan is built first and logged, so the dialog says what is about to
+    happen before it happens.
+    """
+
+    def __init__(self, credentials: M365Credentials, source,
+                 config, device_code_callback: Optional[Callable] = None,
+                 task_name: str = "Microsoft 365: Synchronize"):
+        super().__init__(task_name, is_deterministic=True, can_pause=False)
+        self.credentials = credentials
+        self.source = source
+        self.config = config
+        self._device_code_callback = device_code_callback
+
+        self.client: Optional[M365Client] = None
+        self.plan = None
+        self.sync_result = None
+
+    def execute(self) -> str:
+        """Sign in, plan, then carry the plan out."""
+        from services.m365_services import M365SyncService
+
+        self.client = self.open_client(self.credentials,
+                                       self._device_code_callback)
+        service = M365SyncService(self.client, self.config)
+
+        self.emit_progress(5, "Working out what to do...")
+        self.plan = service.create_sync_plan(self.source)
+        self.check_cancelled()
+
+        for problem in self.plan.problems:
+            self.emit_log(problem, LogLevel.WARNING)
+        for reason in self.plan.skipped:
+            self.emit_log(f"Skipped — {reason}", LogLevel.WARNING)
+
+        self.emit_log(f"Plan: {self.plan.summary()}", LogLevel.INFO)
+
+        if self.plan.is_empty:
+            self.emit_progress(100, "Nothing to do")
+            return "Nothing needed synchronising"
+
+        self.sync_result = service.execute_sync(
+            self.plan, progress=self._on_progress, log=self._on_log)
+
+        return self.sync_result.summary()
+
+    def _on_progress(self, percent: int, message: str) -> None:
+        self.check_cancelled()
+        # The plan is already done, so the execution owns the last 90%.
+        self.emit_progress(10 + int(percent * 0.9), message)
+
+    def _on_log(self, message: str, level: str) -> None:
+        self.emit_log(message, {
+            "success": LogLevel.SUCCESS,
+            "warning": LogLevel.WARNING,
+            "error": LogLevel.ERROR,
+        }.get(level, LogLevel.INFO))
+
+    def cleanup(self) -> None:
+        """Release the session, whatever happened."""
+        if self.client is not None:
+            self.client.close()
+            self.client = None

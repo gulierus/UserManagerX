@@ -786,19 +786,27 @@ class TestOperationsTabSourceSelection:
 class TestOperationsTabOperationList:
     """The operation list drives the stacked widget on the right."""
 
-    def test_the_three_documented_operations_are_offered(self, ops_tab):
+    def test_every_documented_operation_is_offered(self, ops_tab):
         """The list and the stack have to stay in step."""
-        assert list_items(ops_tab.operation_list) == [
-            "Active Directory Management",
-            "Export to Encrypted PDF",
-            "Export to Encrypted JSON",
-        ]
-        assert ops_tab.operation_stack.count() == 3
+        from ui.operations_tab import OperationsTab
+
+        assert list_items(ops_tab.operation_list) == OperationsTab.OPERATIONS
+        assert ops_tab.operation_stack.count() == len(OperationsTab.OPERATIONS)
+
+    def test_every_page_is_told_about_the_source(self, ops_tab, make_source):
+        """A page the tab forgets would silently operate on the wrong data."""
+        source = make_source(name="Roster", classes=[("6.A", 2)])
+        ops_tab.source_manager.add_source(source)
+        select_source(ops_tab.source_combo, "Roster")
+
+        for widget in ops_tab.operation_widgets():
+            assert widget.current_source is source
 
     @pytest.mark.parametrize("row,attribute", [
         (0, "ad_widget"),
-        (1, "pdf_widget"),
-        (2, "json_widget"),
+        (1, "m365_widget"),
+        (2, "pdf_widget"),
+        (3, "json_widget"),
     ])
     def test_choosing_an_operation_shows_the_matching_widget(
             self, ops_tab, row, attribute):
@@ -809,7 +817,7 @@ class TestOperationsTabOperationList:
 
     def test_walking_through_every_operation_and_back_is_stable(self, ops_tab):
         """Switching forwards and backwards always lands on the same page."""
-        for row in (0, 1, 2, 1, 0, 2, 0):
+        for row in (0, 1, 2, 3, 2, 1, 0, 3, 0):
             ops_tab.operation_list.setCurrentRow(row)
             assert ops_tab.operation_stack.currentIndex() == row
 

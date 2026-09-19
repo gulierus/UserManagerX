@@ -15,6 +15,7 @@ from ui.settings_tab import (
 )
 
 from operations.ad_management import ADManagementWidget
+from operations.m365_management import M365ManagementWidget
 from operations.pdf_export import PDFExportWidget
 from operations.json_export import JSONExportWidget
 
@@ -27,6 +28,14 @@ logger = logging.getLogger(__name__)
 
 class OperationsTab(QWidget):
     """Third tab for performing operations on a single source"""
+
+    #: The operations offered, in the order of the pages in the stack.
+    OPERATIONS = [
+        "Active Directory Management",
+        "Microsoft 365 Management",
+        "Export to Encrypted PDF",
+        "Export to Encrypted JSON",
+    ]
     
     def __init__(self, source_manager):
         super().__init__()
@@ -127,11 +136,7 @@ class OperationsTab(QWidget):
 
         self.operation_list = QListWidget()
         self.operation_list.setStyleSheet(CATEGORY_LIST_STYLE)
-        self.operation_list.addItems([
-            "Active Directory Management",
-            "Export to Encrypted PDF",
-            "Export to Encrypted JSON"
-        ])
+        self.operation_list.addItems(self.OPERATIONS)
         self.operation_list.currentRowChanged.connect(self.on_operation_changed)
         operations_layout.addWidget(self.operation_list, stretch=1)
 
@@ -155,10 +160,13 @@ class OperationsTab(QWidget):
 
         # Create operation widgets
         self.ad_widget = ADManagementWidget(self.source_manager)
+        self.m365_widget = M365ManagementWidget(self.source_manager)
         self.pdf_widget = PDFExportWidget(self.source_manager)
         self.json_widget = JSONExportWidget(self.source_manager)
 
+        # The order must match OPERATIONS above.
         self.operation_stack.addWidget(self.ad_widget)
+        self.operation_stack.addWidget(self.m365_widget)
         self.operation_stack.addWidget(self.pdf_widget)
         self.operation_stack.addWidget(self.json_widget)
 
@@ -219,10 +227,20 @@ class OperationsTab(QWidget):
         if self.current_source and self.current_source.name == source_name:
             # Push the same source through again: every operation widget
             # rebuilds its view from it in set_source().
-            self.ad_widget.set_source(self.current_source)
-            self.pdf_widget.set_source(self.current_source)
-            self.json_widget.set_source(self.current_source)
+            for widget in self.operation_widgets():
+                widget.set_source(self.current_source)
             logger.debug(f"Operation widgets refreshed after edit of: {source_name}")
+
+    def operation_widgets(self) -> list:
+        """
+        Every operation page, in stack order.
+
+        Read from the stack rather than listed by hand, so adding an operation
+        cannot leave one page never told about the source - which is what the
+        three hard-coded calls here used to risk.
+        """
+        return [self.operation_stack.widget(index)
+                for index in range(self.operation_stack.count())]
 
     def populate_sources(self):
         """
@@ -253,15 +271,24 @@ class OperationsTab(QWidget):
             self.current_source = self.source_manager.get_source_by_name(source_name)
             
         # Update all operation widgets
-        self.ad_widget.set_source(self.current_source)
-        self.pdf_widget.set_source(self.current_source)
-        self.json_widget.set_source(self.current_source)
+        for widget in self.operation_widgets():
+            widget.set_source(self.current_source)
         
         logger.info(f"Selected source for operations: {source_name}")
         
     def on_operation_changed(self, index):
-        """Handle operation selection change"""
-        if index >= 0:
-            self.operation_stack.setCurrentIndex(index)
-            operations = ["AD Management", "PDF Export", "JSON Export"]
-            logger.info(f"Selected operation: {operations[index]}")
+        """
+        Handle operation selection change.
+
+        The name is read from OPERATIONS rather than from a second list that
+        happened to be written out here: that list had three entries while the
+        tab had four, so selecting the last operation raised IndexError - and
+        an exception inside a Qt slot makes PyQt6 call qFatal(), which aborts
+        the whole application (the same failure mode as point 25).
+        """
+        if index < 0:
+            return
+
+        self.operation_stack.setCurrentIndex(index)
+        if 0 <= index < len(self.OPERATIONS):
+            logger.info("Selected operation: %s", self.OPERATIONS[index])
