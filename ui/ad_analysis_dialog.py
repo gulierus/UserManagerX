@@ -51,8 +51,14 @@ TABLE_STYLE = """
 """
 
 #: Cell backgrounds for the two severities.
-ERROR_COLOR = QColor("#5a2a2a")
-WARNING_COLOR = QColor("#5a4a2a")
+#:
+#: The first attempt used saturated dark red/amber fills, which swallowed the
+#: text: the table paints its own foreground colour and the contrast against a
+#: strong fill was far too low to read. These are barely-there tints of the
+#: same hues - enough to pick the cell out at a glance, light enough to leave
+#: the text legible in every theme.
+ERROR_COLOR = QColor(200, 80, 80, 45)
+WARNING_COLOR = QColor(220, 160, 60, 45)
 
 #: Person fields shown as columns, in order: ``(caption, attribute)``.
 FIELD_COLUMNS = [
@@ -117,8 +123,10 @@ class ADAnalysisDialog(QDialog):
 
         legend = QLabel(
             "Cells with a problem are highlighted: "
-            "<span style='background-color:#5a2a2a;'>&nbsp;error&nbsp;</span> "
-            "&nbsp; <span style='background-color:#5a4a2a;'>&nbsp;warning&nbsp;</span>"
+            "<span style='background-color:rgba(200,80,80,0.35);'>"
+            "&nbsp;error&nbsp;</span> &nbsp; "
+            "<span style='background-color:rgba(220,160,60,0.35);'>"
+            "&nbsp;warning&nbsp;</span>"
             " &nbsp;·&nbsp; <b>Fix</b> fills in the user name, password and "
             "display name that are missing or malformed."
         )

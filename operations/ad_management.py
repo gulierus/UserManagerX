@@ -371,8 +371,9 @@ class ADManagementWidget(QWidget):
     
     # Default visible columns
     DEFAULT_COLUMNS = ["Name", "Class", "Username", "Email", "Status", "Enabled", "Dirty"]
-    ALL_COLUMNS = ["Name", "Class", "Username", "Password", "Email", "Display Name", 
-                   "Status", "Enabled", "Dirty", "Must Change Pwd", "Cannot Change Pwd", 
+    ALL_COLUMNS = ["Name", "Class", "Username", "Password", "Email", "Display Name",
+                   "Home Directory", "Groups",
+                   "Status", "Enabled", "Dirty", "Must Change Pwd", "Cannot Change Pwd",
                    "Never Expires"]
     
     def __init__(self, source_manager):
@@ -397,13 +398,29 @@ class ADManagementWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # Info
+        # Info, with the collapse control on the same row
+        header_row = QHBoxLayout()
         info = QLabel(
             "<b>Active Directory Management</b><br>"
             "Manage student data synchronization with Active Directory."
         )
         info.setWordWrap(True)
-        layout.addWidget(info)
+        header_row.addWidget(info, stretch=1)
+
+        # One button hides BOTH the connection panel and the operations panel,
+        # so the person table can use the whole tab. "Columns..." and the table
+        # controls stay visible - they belong to the table.
+        self.toggle_panels_button = QPushButton("⌃ Hide connection && operations")
+        self.toggle_panels_button.setCheckable(True)
+        self.toggle_panels_button.setChecked(False)
+        self.toggle_panels_button.setToolTip(
+            "Collapse the Active Directory Connection and Operations panels to "
+            "see more of the person table."
+        )
+        self.toggle_panels_button.toggled.connect(self._on_toggle_panels)
+        header_row.addWidget(self.toggle_panels_button, alignment=Qt.AlignmentFlag.AlignTop)
+
+        layout.addLayout(header_row)
         
         # AD Connection Panel
         conn_group = QGroupBox("Active Directory Connection")
@@ -513,6 +530,7 @@ class ADManagementWidget(QWidget):
         self.ad_ou_hint.setVisible(False)
         conn_layout.addWidget(self.ad_ou_hint)
 
+        self.connection_group = conn_group
         layout.addWidget(conn_group)
         
         # Operations Panel
@@ -561,6 +579,11 @@ class ADManagementWidget(QWidget):
         analyze_btn.clicked.connect(self.analyze_source)
         ops_layout.addWidget(analyze_btn)
 
+        bulk_edit_btn = QPushButton("✏️ Bulk Edit...")
+        bulk_edit_btn.setToolTip("Edit multiple persons at once")
+        bulk_edit_btn.clicked.connect(self.bulk_edit_persons)
+        ops_layout.addWidget(bulk_edit_btn)
+
         manage_groups_btn = QPushButton("🗂️ Manage Groups...")
         manage_groups_btn.clicked.connect(self.open_group_management)
         ops_layout.addWidget(manage_groups_btn)
@@ -583,27 +606,33 @@ class ADManagementWidget(QWidget):
         sync_btn.clicked.connect(self.synchronize)
         ops_layout.addWidget(sync_btn)
         
+        self.operations_group = ops_group
         layout.addWidget(ops_group)
         
         # Table controls
         table_controls = QHBoxLayout()
-        
-        table_controls.addWidget(QLabel("<b>Persons:</b>"))
-        
-        # Column visibility button
+
+        # "Columns..." stays here on purpose: it belongs to the table, and it
+        # must remain reachable when the two panels above are collapsed.
         columns_btn = QPushButton("📋 Columns...")
         columns_btn.setToolTip("Select visible columns")
         columns_btn.clicked.connect(self.select_columns)
         table_controls.addWidget(columns_btn)
-        
-        # Bulk edit button
-        bulk_edit_btn = QPushButton("✏️ Bulk Edit...")
-        bulk_edit_btn.setToolTip("Edit multiple persons at once")
-        bulk_edit_btn.clicked.connect(self.bulk_edit_persons)
-        table_controls.addWidget(bulk_edit_btn)
-        
+
+        # --- 19b: show what Active Directory currently holds ---------------
+        self.show_ad_diff_button = QPushButton("👁 Show AD differences")
+        self.show_ad_diff_button.setCheckable(True)
+        self.show_ad_diff_button.setChecked(True)
+        self.show_ad_diff_button.setToolTip(
+            "Outline the cells whose value differs from the one read from "
+            "Active Directory by 'Discover in AD'.\n"
+            "Hover over an outlined cell to see the directory's value."
+        )
+        self.show_ad_diff_button.toggled.connect(self._on_ad_diff_toggled)
+        table_controls.addWidget(self.show_ad_diff_button)
+
         table_controls.addStretch()
-        
+
         layout.addLayout(table_controls)
         
         # Person Table
@@ -638,6 +667,19 @@ class ADManagementWidget(QWidget):
         
         layout.addWidget(self.person_table)
         
+    def _on_toggle_panels(self, hidden: bool) -> None:
+        """Collapse or restore the two panels above the table."""
+        self.connection_group.setVisible(not hidden)
+        self.operations_group.setVisible(not hidden)
+        self.toggle_panels_button.setText(
+            "⌄ Show connection && operations" if hidden
+            else "⌃ Hide connection && operations"
+        )
+
+    def _on_ad_diff_toggled(self, _checked: bool) -> None:
+        """Repaint the table so the outlines appear or disappear."""
+        self.refresh_person_table()
+
     def _on_search_scope_changed(self, _index: int) -> None:
         """Only the "named OUs" scope needs the OU list."""
         named = self.ad_scope_combo.currentData() is SearchScope.NAMED_OUS
@@ -777,6 +819,31 @@ class ADManagementWidget(QWidget):
                 self.person_table.setItem(row, col, display_item)
                 col += 1
             
+            # Home Directory
+            if "Home Directory" in self.visible_columns:
+                home_text = person.home_directory or "(not set)"
+                if person.home_directory and person.home_drive:
+                    home_text = f"{person.home_drive}  {person.home_directory}"
+                home_item = QTableWidgetItem(home_text)
+                home_item.setToolTip(person.home_directory or "")
+                self.person_table.setItem(row, col, home_item)
+                col += 1
+
+            # Groups the person belongs to
+            if "Groups" in self.visible_columns:
+                groups = person.group_memberships or []
+                if groups:
+                    names = [g.name for g in groups]
+                    groups_text = ", ".join(names)
+                    groups_item = QTableWidgetItem(groups_text)
+                    # The DNs are what actually identifies a group; showing them
+                    # in the cell would be unreadable, so they go in the tooltip.
+                    groups_item.setToolTip("\n".join(g.dn for g in groups))
+                else:
+                    groups_item = QTableWidgetItem("(none)")
+                self.person_table.setItem(row, col, groups_item)
+                col += 1
+
             # Status
             if "Status" in self.visible_columns:
                 status_item = QTableWidgetItem(person.ad_status.value)

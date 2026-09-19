@@ -55,7 +55,7 @@ class SourceSelectionTab(QWidget):
         self.source_combo = QComboBox()
         self.source_combo.addItems([
             "EduPage",
-            "Encrypted File",
+            "Encrypted JSON File",
             "Active Directory"
         ])
         self.source_combo.currentIndexChanged.connect(self.on_source_changed)
@@ -100,5 +100,5 @@ class SourceSelectionTab(QWidget):
     def on_source_changed(self, index):
         """Handle source type selection change"""
         self.config_stack.setCurrentIndex(index)
-        source_types = ["EduPage", "Encrypted File", "Active Directory"]
+        source_types = ["EduPage", "Encrypted JSON File", "Active Directory"]
         logger.info(f"Source type changed to: {source_types[index]}")

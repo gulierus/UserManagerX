@@ -216,12 +216,19 @@ class FileSourceWidget(QWidget):
         # Determine file filter based on selected method
         method = self.method_combo.currentData()
         
+        # ".json" is deliberately NOT offered. An AES-GCM file is internally a
+        # JSON envelope, so the extension looks plausible - but the application
+        # only ever writes ".aes" and ".gpg", and a PLAINTEXT JSON export
+        # cannot be loaded at all: detect_encryption_method() rejects it with
+        # "Cannot detect encryption method from file format". Offering ".json"
+        # invited users to pick an unencrypted file that can never work.
+        # "All Files (*)" is still there for a file that was renamed.
         if method == "gpg":
             filter_str = "GPG Encrypted Files (*.gpg);;All Files (*)"
         elif method == "aes-gcm":
-            filter_str = "AES Encrypted Files (*.aes *.json);;All Files (*)"
+            filter_str = "AES Encrypted Files (*.aes);;All Files (*)"
         else:
-            filter_str = "Encrypted Files (*.gpg *.aes *.json);;All Files (*)"
+            filter_str = "Encrypted Files (*.gpg *.aes);;All Files (*)"
         
         file_path, _ = QFileDialog.getOpenFileName(
             self,

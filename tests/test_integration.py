@@ -796,7 +796,7 @@ class TestOperationsTabOperationList:
 
 SOURCE_TYPES = [
     (0, "EduPage", "edupage_widget"),
-    (1, "Encrypted File", "file_widget"),
+    (1, "Encrypted JSON File", "file_widget"),
     (2, "Active Directory", "ad_widget"),
 ]
 
@@ -808,7 +808,7 @@ class TestSourceSelectionTab:
     def test_the_three_documented_source_types_are_offered(self, selection_tab):
         """Combo entries and stacked pages must line up one to one."""
         assert combo_items(selection_tab.source_combo) == \
-            ["EduPage", "Encrypted File", "Active Directory"]
+            ["EduPage", "Encrypted JSON File", "Active Directory"]
         assert selection_tab.config_stack.count() == 3
         assert selection_tab.config_stack.currentIndex() == 0
 

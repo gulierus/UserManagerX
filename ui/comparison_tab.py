@@ -117,7 +117,7 @@ class SourcePanel(QWidget):
 
         # Tree widget - only show name and class, NO AD username
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Class"])
+        self.tree.setHeaderLabels(["Name", "Class / Enrollment year"])
         self.tree.setColumnWidth(0, 200)
         layout.addWidget(self.tree, stretch=1)
 
@@ -238,6 +238,10 @@ class SourcePanel(QWidget):
 
         class_row2 = QHBoxLayout()
         convert_class_btn = QPushButton("🔢 Convert Numerals (Selected Class)")
+        # It sits alone on its own row, so it inherited the layout's default
+        # height instead of the one Qt gives the three buttons above it. Pin it
+        # to the same sizeHint so the group looks like one block.
+        convert_class_btn.setMinimumHeight(add_class_btn.sizeHint().height())
         convert_class_btn.setToolTip(
             "Convert the numeral of the selected class between Roman and "
             "Arabic notation, or rewrite it with a custom template"
@@ -303,8 +307,20 @@ class SourcePanel(QWidget):
         total_persons = 0
 
         for cls in self.current_source.classes:
-            class_item = QTreeWidgetItem([cls.name or "(unnamed class)", ""])
+            # The enrollment year goes in the second column, which is empty for
+            # a class row anyway. Appending it to the name would work too, but
+            # the years then line up under each other and the class name stays
+            # exactly what the source called it.
+            year_text = (f"enrolled {cls.enrollment_year}"
+                         if cls.enrollment_year else "")
+
+            class_item = QTreeWidgetItem([cls.name or "(unnamed class)", year_text])
             class_item.setData(0, Qt.ItemDataRole.UserRole, cls)
+            if cls.enrollment_year:
+                class_item.setToolTip(
+                    1, f"{cls.name} started the first grade in "
+                       f"{cls.enrollment_year}"
+                )
 
             for person in cls.persons:
                 if filter_text and not person.matches_search(filter_text):

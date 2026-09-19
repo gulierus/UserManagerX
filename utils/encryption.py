@@ -674,6 +674,15 @@ def detect_encryption_method(file_path: str) -> EncryptionMethod:
             except json.JSONDecodeError:
                 pass
         
+        # A plaintext JSON document is the most common wrong file to pick:
+        # it looks like an export, but this source only reads ENCRYPTED files.
+        if first_line.startswith("{") or first_line.startswith("["):
+            raise ValueError(
+                "This looks like a plain, unencrypted JSON file. Only encrypted "
+                "files can be loaded here - export the data again with "
+                "'Export to Encrypted JSON' on the Operations tab."
+            )
+
         raise ValueError("Cannot detect encryption method from file format")
         
     except Exception as e:

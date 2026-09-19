@@ -16,15 +16,44 @@ from typing import List, Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QGroupBox, QHBoxLayout, QLabel, QListWidget,
+    QAbstractItemView, QFrame, QGroupBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSplitter, QTextBrowser,
     QVBoxLayout, QWidget,
+)
+
+from ui.settings_tab import (
+    CATEGORY_CAPTION_STYLE, CATEGORY_LIST_STYLE, CATEGORY_PANEL_STYLE,
 )
 
 from models import Source
 from utils.class_name_utils import analyze_class_names
 
 logger = logging.getLogger(__name__)
+
+
+class SourceListWidget(QListWidget):
+    """
+    A list that ignores clicks on its empty area.
+
+    Qt clears the selection when the user clicks below the last row. Here that
+    was actively unhelpful: the detail panel on the right fell back to "Select
+    at least one source" the moment the user clicked anywhere in the empty
+    space under the list.
+    """
+
+    def mousePressEvent(self, event):
+        """Swallow a press that is not on an item."""
+        if self.itemAt(event.pos()) is None:
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        """A double click on empty space must not clear the selection either."""
+        if self.itemAt(event.pos()) is None:
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class SourceManagerTab(QWidget):
@@ -69,16 +98,34 @@ class SourceManagerTab(QWidget):
         list_layout = QVBoxLayout(list_panel)
         list_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.count_label = QLabel()
-        self.count_label.setStyleSheet("font-weight: bold;")
-        list_layout.addWidget(self.count_label)
+        # Same framed, tinted panel the Settings tab uses for its category
+        # chooser, so the two "pick something from a list" sidebars match.
+        list_container = QFrame()
+        list_container.setFrameShape(QFrame.Shape.StyledPanel)
+        list_container.setObjectName("categoryContainer")
+        list_container.setStyleSheet(CATEGORY_PANEL_STYLE)
 
-        self.source_list = QListWidget()
+        container_layout = QVBoxLayout(list_container)
+        container_layout.setContentsMargins(6, 6, 6, 6)
+        container_layout.setSpacing(4)
+
+        caption = QLabel("SOURCES")
+        caption.setStyleSheet(CATEGORY_CAPTION_STYLE)
+        container_layout.addWidget(caption)
+
+        self.count_label = QLabel()
+        self.count_label.setStyleSheet("color: #aaa; font-size: 10px; padding: 0 6px;")
+        container_layout.addWidget(self.count_label)
+
+        self.source_list = SourceListWidget()
+        self.source_list.setStyleSheet(CATEGORY_LIST_STYLE)
         self.source_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self.source_list.itemSelectionChanged.connect(self._on_selection_changed)
-        list_layout.addWidget(self.source_list, stretch=1)
+        container_layout.addWidget(self.source_list, stretch=1)
+
+        list_layout.addWidget(list_container, stretch=1)
 
         button_row = QHBoxLayout()
         self.delete_button = QPushButton("🗑️ Delete Selected")
@@ -106,6 +153,13 @@ class SourceManagerTab(QWidget):
 
         self.detail_view = QTextBrowser()
         self.detail_view.setOpenExternalLinks(False)
+        # The panel used to mix heading sizes with bold values, which read as
+        # three different fonts. It now uses the application's own font at one
+        # size, with nothing bold - only colour separates a heading from a
+        # value, exactly like the Settings panels.
+        self.detail_view.setStyleSheet(
+            "QTextBrowser { font-size: 13px; font-weight: normal; }"
+        )
         detail_layout.addWidget(self.detail_view)
 
         splitter.addWidget(detail_group)
@@ -223,38 +277,45 @@ class SourceManagerTab(QWidget):
         for key, value in (source.source_info or {}).items():
             rows.append((f"Info: {key}", str(value)))
 
-        info_rows = "".join(
-            f"<tr><td style='padding:3px 12px 3px 0; color:#aaa;'>{key}</td>"
-            f"<td style='padding:3px 0;'><b>{value}</b></td></tr>"
-            for key, value in rows
+        def rows_html(pairs):
+            """Render key/value pairs at one weight, separated only by colour."""
+            return "".join(
+                f"<tr><td style='padding:3px 14px 3px 0; color:#8fa9c8;'>{key}</td>"
+                f"<td style='padding:3px 0;'>{value}</td></tr>"
+                for key, value in pairs
+            )
+
+        info_rows = rows_html(rows)
+
+        credential_rows = rows_html([
+            ("With user name", f"{with_username} of {len(persons)}"),
+            ("With password", f"{with_password} of {len(persons)}"),
+            ("With e-mail", f"{with_email} of {len(persons)}"),
+            ("In at least one group", f"{with_groups} of {len(persons)}"),
+            ("With unsaved changes", f"{dirty} of {len(persons)}"),
+        ]) if persons else (
+            "<tr><td colspan='2' style='color:#888;'>No students.</td></tr>"
         )
 
-        credential_rows = "".join(
-            f"<tr><td style='padding:3px 12px 3px 0; color:#aaa;'>{label}</td>"
-            f"<td style='padding:3px 0;'><b>{value}</b> of {len(persons)}</td></tr>"
-            for label, value in [
-                ("With user name", with_username),
-                ("With password", with_password),
-                ("With e-mail", with_email),
-                ("In at least one group", with_groups),
-                ("With unsaved changes", dirty),
-            ]
-        ) if persons else "<tr><td colspan='2' style='color:#aaa;'>No students.</td></tr>"
-
-        class_rows = "".join(
-            f"<tr><td style='padding:2px 12px 2px 0;'>{cls.name or '(unnamed)'}</td>"
-            f"<td style='padding:2px 0; color:#aaa;'>{len(cls.persons)} student(s)</td></tr>"
+        class_rows = rows_html([
+            (cls.name or "(unnamed)",
+             f"{len(cls.persons)} student(s)"
+             + (f" · enrolled {cls.enrollment_year}" if cls.enrollment_year else ""))
             for cls in source.classes
-        ) or "<tr><td colspan='2' style='color:#aaa;'>No classes.</td></tr>"
+        ]) or "<tr><td colspan='2' style='color:#888;'>No classes.</td></tr>"
 
+        section = ("color:#64B5F6; font-weight:normal; font-size:13px;"
+                   " padding:10px 0 2px 0;")
         self.detail_view.setHtml(f"""
-            <h2 style='margin-bottom:4px;'>{source.name}</h2>
-            <h4 style='color:#64B5F6;'>Overview</h4>
-            <table>{info_rows}</table>
-            <h4 style='color:#64B5F6;'>Active Directory data</h4>
-            <table>{credential_rows}</table>
-            <h4 style='color:#64B5F6;'>Classes</h4>
-            <table>{class_rows}</table>
+            <div style='font-size:13px; font-weight:normal;'>
+              <div style='color:#8fa9c8; padding-bottom:6px;'>{source.name}</div>
+              <div style='{section}'>Overview</div>
+              <table>{info_rows}</table>
+              <div style='{section}'>Active Directory data</div>
+              <table>{credential_rows}</table>
+              <div style='{section}'>Classes</div>
+              <table>{class_rows}</table>
+            </div>
         """)
 
     # ------------------------------------------------------------------
