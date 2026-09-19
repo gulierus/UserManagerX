@@ -185,6 +185,18 @@ class StudentManagementSystem(QMainWindow):
         
         # Apply palette (optional - can be enabled/disabled)
         # QApplication.setPalette(dark_palette)
+
+        # Give the tooltips the application's own look.  The popups that show
+        # what Active Directory holds (point 19 b) are ordinary tooltips, so
+        # styling them here is what makes them match the rest of the interface
+        # instead of looking like a bare system hint.
+        try:
+            from ui.ad_difference_view import apply_tooltip_style
+            application = QApplication.instance()
+            if application is not None:
+                apply_tooltip_style(application)
+        except Exception as exc:
+            logger.warning("Could not style the tooltips: %s", exc)
         
     def closeEvent(self, event):
         """Handle application close event"""

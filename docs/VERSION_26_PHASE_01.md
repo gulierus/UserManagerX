@@ -484,6 +484,161 @@ fields the synchronisation had just brought into agreement.
 
 ---
 
+## 19) Showing what Active Directory holds
+
+### a) "Discover in AD" now reads every field
+
+**Before.** The discovery searches asked for `'*'` and nothing else:
+
+```python
+if attributes is None:
+    attributes = ['*', 'modifyTimestamp', 'createTimestamp']
+```
+
+`'*'` means "the attributes this entry carries", and a directory is free to
+leave constructed attributes such as `memberOf` out of it. Relying on it is a
+gamble that costs exactly the fields the report names.
+
+**Change.** Discovery and the post-write refresh both ask for a named list:
+
+```python
+AD_READ_ATTRIBUTES = list(dict.fromkeys(
+    PERSON_ATTRIBUTES + ['*', 'modifyTimestamp', 'createTimestamp']
+))
+```
+
+`PERSON_ATTRIBUTES` is the same list the "1. Data Sources" loader uses
+(point 20), so the display name, the email, the description, the home
+directory, the home drive and `memberOf` are always requested by name.
+
+### b) Two answers, then the two ways of showing a value
+
+**Question: is it true that detection happens only in
+`ConflictDetector.check_conflict`?**
+
+**No — and it was never quite what that method did.** There were two separate
+things going on, and only one of them was a comparison:
+
+| Where | What it compared | When it ran |
+|---|---|---|
+| `Person._mark_dirty()` | the person **against herself** — the value now versus the value when she was loaded | on every edit |
+| `ConflictDetector.check_conflict()` | the person's *local changes* against **fresh** values read from the directory | only from the synchronisation path, and only for a person who is dirty **and** has a DN |
+
+Neither of them ever asked "does this person agree with Active Directory?".
+`_mark_dirty` does not know the directory exists. `check_conflict` starts with
+
+```python
+if not person.is_dirty() or not person.ad_dn:
+    return None
+```
+
+so a person who was never edited was never compared with anything, and even for
+an edited person it only looks at the fields that were edited — a field that
+differs because *Active Directory* holds something else was invisible.
+
+That is why this point needed a new comparison rather than a new view of an
+existing one: `services.ad_comparison.compare_person_with_ad()` (see point 18).
+It now runs in discovery, for every person, over every comparable field.
+
+**Question: why does `ConflictDetector` exist?**
+
+It solves a different problem: **the lost update**. Two people can work on the
+same account. The sequence it protects against is:
+
+1. "Discover in AD" reads Jan's account and remembers `modifyTimestamp`.
+2. A colleague changes Jan's email directly in Active Directory.
+3. Meanwhile this application's user also edits Jan's email.
+4. The synchronisation writes — and silently destroys the colleague's change.
+
+`check_conflict()` re-reads the account at step 4, notices that
+`modifyTimestamp` no longer matches `person.ad_version`, and reports the fields
+that were changed **on both sides** (`conflicting_fields`) separately from
+those changed only locally (`non_conflicting_local`), so the user can be asked
+what to do instead of one write quietly winning.
+
+So the two have different jobs and both are needed:
+
+| | `ad_comparison` (new) | `ConflictDetector` (existing) |
+|---|---|---|
+| Question | do the two sides agree *right now, as far as we know*? | has AD changed **since we looked**, in a way that clashes with our edits? |
+| Data | the snapshot from "Discover in AD" | a **fresh** read at synchronisation time |
+| Runs | on every discovery, for every person | during synchronisation, only for dirty persons with a DN |
+| Used for | the status, the outlines, the tooltips | asking the user how to resolve a clash |
+
+**And yes — the outlines deliberately do not notice later changes in AD.** The
+request asks for exactly that, and it is the right behaviour: the values shown
+are the ones "Discover in AD" read. If somebody changes the directory
+afterwards, the application keeps showing the discovered value until discovery
+is run again. A view that silently re-read the directory would make the table
+move under the user's hands, and it would put an LDAP round trip behind every
+repaint.
+
+### The two ways of showing a value
+
+Both are built from one module, `ui/ad_difference_view.py`, so they cannot
+drift apart: one colour, one popup, one switch.
+
+**1. In the editing window.** Every field whose value differs from the
+directory is outlined in amber, and hovering it shows the popup:
+
+> **Email** differs from Active Directory
+> In Active Directory: `stary@skola.cz`
+> In this application: `novy@skola.cz`
+> *Read by "Discover in AD". Press it again to refresh.*
+
+A line above the form says what the outlines mean right now — *"2 fields differ
+from Active Directory"*, *"Every field matches …"*, or *"This person has not
+been discovered in Active Directory yet."*, which is the distinction a bare
+absence of outlines could not make.
+
+Nine fields are covered: first name, last name, username, display name, email,
+description, home directory, home drive and the group list. The **password is
+deliberately not** — Active Directory never gives one back, so there is nothing
+to compare it with.
+
+The group list needed one extra step: a tooltip set on a `QListWidget` is only
+shown over its *empty* area, because hovering a row shows that row's own
+tooltip. The explanation is therefore appended to each row's tooltip as well,
+below the group's DN — and the row's own text is remembered, so toggling the
+button repeatedly cannot pile the explanation up on top of itself.
+
+**2. In the person table.** The same outline around the differing cells, drawn
+by a `QStyledItemDelegate` (a `QTableWidgetItem` cannot carry a border of its
+own), with the same popup on hover. The `Name` cell covers the first and last
+name and the `Home Directory` cell covers the drive and the path, so a cell
+showing two fields is explained by both: if only one of them differs the popup
+names that field, and if both differ it merges them into one before/after pair.
+
+Turning the outlines off only stops the **painting** — the flags stay on the
+cells, so switching back on is a repaint rather than a rebuild of every row.
+
+### The switch is a setting, not a window's mood
+
+The request asks that the choice made in one person's editing window still
+apply when the next person is opened. It is therefore stored as
+`general.show_ad_differences` rather than kept on a dialog:
+
+* the editing window reads it when it opens and writes it when the button is
+  clicked;
+* the person table does the same;
+* so the two windows always agree, and the choice also survives a restart.
+
+The button's caption follows its state (*Show AD differences* /
+*Hide AD differences*), so it is obvious what clicking it will do.
+
+### The popup's design
+
+It is a Qt tooltip — it appears where the user expects, near the pointer, and
+disappears by itself — but its **content is rich text built by the
+application**, with the field name in the outline colour, the two values
+labelled, and a grey footnote explaining where the value came from. The tooltip
+chrome (background, border, radius, padding, font size) is styled once for the
+whole application in `main.py`, so it stops looking like a bare system hint.
+Everything taken from the data is HTML-escaped, because a display name may
+legitimately contain `<` or `&`.
+
+---
+
 ## 20) Which fields the Active Directory *source* loads
 
 **Question: when data is loaded from Active Directory on the "1. Data Sources"
@@ -753,6 +908,7 @@ either one twice suggests `... (2)`.
 | `ui/source_combo.py` | read-only / editable labelling of source combos (05) |
 | `utils/enrollment_task.py` | background enrollment-year tasks (13) |
 | `services/ad_comparison.py` | comparing a person with the discovered AD values (18, 19) |
+| `ui/ad_difference_view.py` | the outlines, the popup and the shared switch (19 b) |
 | `utils/ad_entry_mapping.py` | which AD attributes are read, and how they become a person (20) |
 | `utils/source_naming.py` | readable default names for sources (26) |
 | `tests/test_source_combo.py` | 43 tests for the labelling and the Settings switch |
@@ -762,11 +918,13 @@ either one twice suggests `... (2)`.
 | `tests/test_ad_status.py` | 71 tests pinning every meaning in table 2 |
 | `tests/test_ad_comparison.py` | 36 tests for the field-by-field comparison |
 | `tests/test_ad_discovery.py` | 21 tests for discovery, which had none before |
+| `tests/test_ad_difference_view.py` | 55 tests for the outlines, the popup and the switch |
 
 ---
 
 ## Still open
 
-Point **19 a** is done (discovery now reads every field). Points **19 b**,
-**21**, **22** and **23** are not part of this phase yet. Point 21 in particular is blocked — see the note in the reply
+Points **21**, **22** and **23** are not part of this phase yet. Point 21 is
+blocked - see the note in the reply about the truncated `main.cs` - and 22/23
+describe exports of the Microsoft 365 fields that point 21 would introduce. Point 21 in particular is blocked — see the note in the reply
 about the truncated `main.cs`.

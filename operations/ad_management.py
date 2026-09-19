@@ -34,6 +34,10 @@ from ui.username_policy_dialog import UsernamePolicyDialog
 from ui.home_template_dialog import HomeDirectoryTemplateDialog
 from ui.ad_analysis_dialog import ADAnalysisDialog
 from utils.ad_search_scope import OU_PLACEHOLDERS, SearchScope, SearchScopeConfig
+from ui.ad_difference_view import (
+    ADDifferenceDelegate, combined_difference, differences_shown, mark_item,
+    person_differences, set_differences_shown, toggle_button_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +394,21 @@ class ADManagementWidget(QWidget):
                    "Home Directory", "Groups",
                    "Status", "Enabled", "Dirty", "Must Change Pwd", "Cannot Change Pwd",
                    "Never Expires"]
+
+    #: Which compared fields each column shows (point 19 b).
+    #:
+    #: A column that is absent here is never outlined, either because Active
+    #: Directory does not hold the value ("Password" - it is never given back,
+    #: "Dirty" - a local flag) or because it is not an attribute at all
+    #: ("Class" is a position in the tree).
+    COLUMN_DIFFERENCE_FIELDS = {
+        "Name": ("first_name", "last_name"),
+        "Username": ("ad_username",),
+        "Email": ("ad_email",),
+        "Display Name": ("ad_display_name",),
+        "Home Directory": ("home_drive", "home_directory"),
+        "Groups": ("group_memberships",),
+    }
     
     def __init__(self, source_manager):
         super().__init__()
@@ -647,9 +666,13 @@ class ADManagementWidget(QWidget):
         table_controls.addWidget(columns_btn)
 
         # --- 19b: show what Active Directory currently holds ---------------
-        self.show_ad_diff_button = QPushButton("👁 Show AD differences")
+        self.show_ad_diff_button = QPushButton()
         self.show_ad_diff_button.setCheckable(True)
-        self.show_ad_diff_button.setChecked(True)
+        # The switch is shared with the editing window and remembered between
+        # sessions, so the button starts in whatever state the user left.
+        self.show_ad_diff_button.setChecked(differences_shown())
+        self.show_ad_diff_button.setText(
+            toggle_button_text(self.show_ad_diff_button.isChecked()))
         self.show_ad_diff_button.setToolTip(
             "Outline the cells whose value differs from the one read from "
             "Active Directory by 'Discover in AD'.\n"
@@ -670,6 +693,13 @@ class ADManagementWidget(QWidget):
         self.person_table.setAlternatingRowColors(True)
         self.person_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.person_table.customContextMenuRequested.connect(self.show_context_menu)
+
+        # Draws the outline around cells that differ from Active Directory.
+        # It asks this widget whether the outlines are on, so toggling the
+        # button only needs a repaint, not a rebuild of every row.
+        self.ad_difference_delegate = ADDifferenceDelegate(
+            self.ad_differences_visible, self.person_table)
+        self.person_table.setItemDelegate(self.ad_difference_delegate)
         
         # Enable sorting
         self.person_table.setSortingEnabled(True)
@@ -703,9 +733,44 @@ class ADManagementWidget(QWidget):
             else "⌃ Hide connection && operations"
         )
 
-    def _on_ad_diff_toggled(self, _checked: bool) -> None:
-        """Repaint the table so the outlines appear or disappear."""
-        self.refresh_person_table()
+    def _mark_ad_difference(self, item, differences: dict, column: str) -> None:
+        """
+        Flag one table cell when its value differs from Active Directory.
+
+        Args:
+            item: The cell.
+            differences: ``field -> FieldDifference`` for this person.
+            column: The column name, which decides which fields the cell shows.
+        """
+        fields = self.COLUMN_DIFFERENCE_FIELDS.get(column)
+        if not fields or not differences:
+            return
+        mark_item(item, combined_difference(
+            column, [differences.get(field) for field in fields]))
+
+    def ad_differences_visible(self) -> bool:
+        """
+        Whether the outlines are currently switched on.
+
+        Read from the button while it exists, so the delegate follows the click
+        immediately, and from the stored setting before the interface is built.
+        """
+        button = getattr(self, "show_ad_diff_button", None)
+        if button is None:
+            return differences_shown()
+        return button.isChecked()
+
+    def _on_ad_diff_toggled(self, checked: bool) -> None:
+        """
+        Remember the choice and repaint the table.
+
+        The state is stored as a setting rather than kept in this widget, which
+        is what makes it survive into the editing window and into the next
+        person the user opens (point 19 b).
+        """
+        set_differences_shown(checked)
+        self.show_ad_diff_button.setText(toggle_button_text(checked))
+        self.person_table.viewport().update()
 
     def _on_search_scope_changed(self, _index: int) -> None:
         """Only the "named OUs" scope needs the OU list."""
@@ -808,10 +873,14 @@ class ADManagementWidget(QWidget):
         for row, person in enumerate(persons):
             col = 0
             first_item = None
+            # What "Discover in AD" found differs from what the application
+            # holds.  Empty for a person who has never been discovered.
+            differences = person_differences(person)
 
             # Name
             if "Name" in self.visible_columns:
                 name_item = QTableWidgetItem(f"{person.first_name} {person.last_name}")
+                self._mark_ad_difference(name_item, differences, "Name")
                 self.person_table.setItem(row, col, name_item)
                 first_item = first_item or name_item
                 col += 1
@@ -825,6 +894,7 @@ class ADManagementWidget(QWidget):
             # Username
             if "Username" in self.visible_columns:
                 username_item = QTableWidgetItem(person.ad_username or "(not set)")
+                self._mark_ad_difference(username_item, differences, "Username")
                 self.person_table.setItem(row, col, username_item)
                 col += 1
             
@@ -837,12 +907,14 @@ class ADManagementWidget(QWidget):
             # Email
             if "Email" in self.visible_columns:
                 email_item = QTableWidgetItem(person.ad_email or "(not set)")
+                self._mark_ad_difference(email_item, differences, "Email")
                 self.person_table.setItem(row, col, email_item)
                 col += 1
             
             # Display Name
             if "Display Name" in self.visible_columns:
                 display_item = QTableWidgetItem(person.ad_display_name or "(not set)")
+                self._mark_ad_difference(display_item, differences, "Display Name")
                 self.person_table.setItem(row, col, display_item)
                 col += 1
             
@@ -853,6 +925,7 @@ class ADManagementWidget(QWidget):
                     home_text = f"{person.home_drive}  {person.home_directory}"
                 home_item = QTableWidgetItem(home_text)
                 home_item.setToolTip(person.home_directory or "")
+                self._mark_ad_difference(home_item, differences, "Home Directory")
                 self.person_table.setItem(row, col, home_item)
                 col += 1
 
@@ -868,6 +941,7 @@ class ADManagementWidget(QWidget):
                     groups_item.setToolTip("\n".join(g.dn for g in groups))
                 else:
                     groups_item = QTableWidgetItem("(none)")
+                self._mark_ad_difference(groups_item, differences, "Groups")
                 self.person_table.setItem(row, col, groups_item)
                 col += 1
 

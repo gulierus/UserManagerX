@@ -18,6 +18,11 @@ from services.ad_group_service import GroupTemplateManager
 from utils.ad_utils import generate_username, generate_password, generate_display_name
 from utils.home_directory_utils import HomeDirectoryPathGenerator, PlaceholderError, HomeDirectoryTemplateManager
 from services.ad_validator import ADValidator
+from services.ad_comparison import has_ad_snapshot
+from ui.ad_difference_view import (
+    differences_shown, mark_widget, person_differences, set_differences_shown,
+    toggle_button_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,32 @@ class PropertyEditorDialog(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
 
         scroll.setWidget(scroll_widget)
+
+        # --- show / hide what Active Directory holds (point 19 b) ---------
+        # Above the scroll area so the button stays reachable while the user
+        # scrolls through the form.
+        diff_row = QHBoxLayout()
+        diff_row.setContentsMargins(10, 8, 10, 0)
+        self.show_ad_diff_button = QPushButton()
+        self.show_ad_diff_button.setCheckable(True)
+        self.show_ad_diff_button.setChecked(differences_shown())
+        self.show_ad_diff_button.setText(
+            toggle_button_text(self.show_ad_diff_button.isChecked()))
+        self.show_ad_diff_button.setToolTip(
+            "Outline the fields whose value differs from the one read from "
+            "Active Directory by 'Discover in AD'.\n"
+            "Hover over an outlined field to see the directory's value.\n"
+            "The choice is remembered for the next person you open."
+        )
+        self.show_ad_diff_button.toggled.connect(self._on_ad_diff_toggled)
+        diff_row.addWidget(self.show_ad_diff_button)
+
+        self.ad_diff_hint = QLabel()
+        self.ad_diff_hint.setStyleSheet("color: #888; font-size: 11px;")
+        diff_row.addWidget(self.ad_diff_hint)
+        diff_row.addStretch()
+        outer_layout.addLayout(diff_row)
+
         outer_layout.addWidget(scroll, stretch=1)
         
         # Create tab-like sections using group boxes
@@ -300,7 +331,107 @@ class PropertyEditorDialog(QDialog):
         # Store original values and validate
         self._store_original_values()
         self.validate()
+        self.refresh_ad_differences()
     
+    # === ACTIVE DIRECTORY DIFFERENCES (point 19 b) ===
+
+    #: Editor widget -> the compared field it shows.
+    #:
+    #: Only fields Active Directory actually holds appear here.  The password
+    #: is absent because the directory never gives one back, and the class
+    #: because it is a position in the tree rather than an attribute.
+    AD_DIFFERENCE_WIDGETS = {
+        'first_name_input': 'first_name',
+        'last_name_input': 'last_name',
+        'username_input': 'ad_username',
+        'display_name_input': 'ad_display_name',
+        'email_input': 'ad_email',
+        'description_input': 'ad_description',
+        'home_path_input': 'home_directory',
+        'home_drive_input': 'home_drive',
+    }
+
+    def _on_ad_diff_toggled(self, checked: bool) -> None:
+        """
+        Remember the choice and repaint the outlines.
+
+        The state is stored as a setting, not on this dialog, which is what
+        makes it survive into the next person the user opens - and into the
+        person table on the Operations tab.
+        """
+        set_differences_shown(checked)
+        self.show_ad_diff_button.setText(toggle_button_text(checked))
+        self.refresh_ad_differences()
+
+    def refresh_ad_differences(self) -> None:
+        """
+        Outline every field that differs from Active Directory, or clear them.
+
+        The values compared against are the ones "Discover in AD" read.  If
+        somebody changes the directory afterwards, this window keeps showing
+        the discovered value until discovery is run again - that is deliberate.
+        """
+        try:
+            show = self.show_ad_diff_button.isChecked()
+            differences = person_differences(self.person) if show else {}
+
+            for attribute, field in self.AD_DIFFERENCE_WIDGETS.items():
+                mark_widget(getattr(self, attribute, None),
+                            differences.get(field))
+
+            group_difference = differences.get('group_memberships')
+            mark_widget(self.current_groups_list, group_difference, "QListWidget")
+            self._mark_group_items(group_difference)
+
+            self._update_ad_diff_hint(show)
+        except Exception:
+            # A missing snapshot or an odd value must never stop the dialog
+            # from being usable.
+            logger.exception("Could not mark the Active Directory differences")
+
+    def _mark_group_items(self, difference) -> None:
+        """
+        Put the group explanation on the rows as well as on the list itself.
+
+        A tooltip set on a ``QListWidget`` is only shown over its empty area:
+        hovering a row shows that row's own tooltip.  Without this, the
+        explanation would be unreachable exactly where the user points.
+        """
+        from ui.ad_difference_view import difference_tooltip
+
+        extra = difference_tooltip(difference) if difference is not None else ""
+        for row in range(self.current_groups_list.count()):
+            item = self.current_groups_list.item(row)
+            if item is None:
+                continue
+            own = item.data(Qt.ItemDataRole.UserRole + 1)
+            if own is None:
+                # Remember the row's own tooltip once, so repeated toggling
+                # cannot pile the explanation up on top of itself.
+                own = item.toolTip()
+                item.setData(Qt.ItemDataRole.UserRole + 1, own)
+            item.setToolTip(f"{own}<hr>{extra}" if extra else own)
+
+    def _update_ad_diff_hint(self, show: bool) -> None:
+        """Say in one line what the outlines mean right now."""
+        if not has_ad_snapshot(self.person):
+            self.ad_diff_hint.setText(
+                "This person has not been discovered in Active Directory yet.")
+            return
+        if not show:
+            self.ad_diff_hint.setText("")
+            return
+
+        count = len(person_differences(self.person))
+        if count == 0:
+            self.ad_diff_hint.setText(
+                "Every field matches the values read from Active Directory.")
+        elif count == 1:
+            self.ad_diff_hint.setText("1 field differs from Active Directory.")
+        else:
+            self.ad_diff_hint.setText(
+                f"{count} fields differ from Active Directory.")
+
     # === VALIDATION HELPER METHODS ===
 
     def _append_success(self, message: str) -> None:
