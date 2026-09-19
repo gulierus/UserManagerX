@@ -12,13 +12,22 @@ from PyQt6.QtCore import Qt
 from sources.edupage_source import EdupageSourceWidget
 from sources.file_source import FileSourceWidget
 from sources.ad_source import ActiveDirectorySourceWidget
+from sources.m365_source import MicrosoftM365SourceWidget
 
 logger = logging.getLogger(__name__)
 
 
 class SourceSelectionTab(QWidget):
     """First tab for selecting and configuring data sources"""
-    
+
+    #: The source types offered, in the order of the pages in the stack.
+    SOURCE_TYPES = [
+        "EduPage",
+        "Encrypted JSON File",
+        "Active Directory",
+        "Microsoft 365 From Web",
+    ]
+
     def __init__(self, source_manager):
         super().__init__()
         self.source_manager = source_manager
@@ -53,11 +62,9 @@ class SourceSelectionTab(QWidget):
         selector_layout.addWidget(QLabel("Select Data Source:"))
         
         self.source_combo = QComboBox()
-        self.source_combo.addItems([
-            "EduPage",
-            "Encrypted JSON File",
-            "Active Directory"
-        ])
+        # The order here is the order of the pages in the stack below, and
+        # SOURCE_TYPES repeats it for the log line; the three must agree.
+        self.source_combo.addItems(self.SOURCE_TYPES)
         self.source_combo.currentIndexChanged.connect(self.on_source_changed)
         selector_layout.addWidget(self.source_combo)
         selector_layout.addStretch()
@@ -75,10 +82,12 @@ class SourceSelectionTab(QWidget):
         self.edupage_widget = EdupageSourceWidget(self.source_manager)
         self.file_widget = FileSourceWidget(self.source_manager)
         self.ad_widget = ActiveDirectorySourceWidget(self.source_manager)
-        
+        self.m365_widget = MicrosoftM365SourceWidget(self.source_manager)
+
         self.config_stack.addWidget(self.edupage_widget)
         self.config_stack.addWidget(self.file_widget)
         self.config_stack.addWidget(self.ad_widget)
+        self.config_stack.addWidget(self.m365_widget)
         
         config_layout.addWidget(self.config_stack)
         layout.addWidget(config_group, stretch=1)
@@ -100,5 +109,5 @@ class SourceSelectionTab(QWidget):
     def on_source_changed(self, index):
         """Handle source type selection change"""
         self.config_stack.setCurrentIndex(index)
-        source_types = ["EduPage", "Encrypted JSON File", "Active Directory"]
-        logger.info(f"Source type changed to: {source_types[index]}")
+        if 0 <= index < len(self.SOURCE_TYPES):
+            logger.info(f"Source type changed to: {self.SOURCE_TYPES[index]}")

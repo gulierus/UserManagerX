@@ -834,6 +834,7 @@ SOURCE_TYPES = [
     (0, "EduPage", "edupage_widget"),
     (1, "Encrypted JSON File", "file_widget"),
     (2, "Active Directory", "ad_widget"),
+    (3, "Microsoft 365 From Web", "m365_widget"),
 ]
 
 
@@ -841,12 +842,20 @@ SOURCE_TYPES = [
 class TestSourceSelectionTab:
     """The first tab picks a source type and shows its configuration page."""
 
-    def test_the_three_documented_source_types_are_offered(self, selection_tab):
+    def test_every_documented_source_type_is_offered(self, selection_tab):
         """Combo entries and stacked pages must line up one to one."""
         assert combo_items(selection_tab.source_combo) == \
-            ["EduPage", "Encrypted JSON File", "Active Directory"]
-        assert selection_tab.config_stack.count() == 3
+            [label for _index, label, _attribute in SOURCE_TYPES]
+        assert selection_tab.config_stack.count() == len(SOURCE_TYPES)
         assert selection_tab.config_stack.currentIndex() == 0
+
+    def test_the_combo_and_the_stack_cannot_drift_apart(self, selection_tab):
+        """One list decides both, so a new type cannot be added to only one."""
+        from ui.source_selection_tab import SourceSelectionTab
+        assert combo_items(selection_tab.source_combo) == \
+            SourceSelectionTab.SOURCE_TYPES
+        assert selection_tab.config_stack.count() == \
+            len(SourceSelectionTab.SOURCE_TYPES)
 
     @pytest.mark.parametrize("index,label,attribute", SOURCE_TYPES)
     def test_choosing_a_source_type_shows_the_matching_page(
