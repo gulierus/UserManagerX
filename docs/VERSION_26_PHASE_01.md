@@ -394,6 +394,144 @@ per line, for when the exact group matters.
 
 ---
 
+## 20) Which fields the Active Directory *source* loads
+
+**Question: when data is loaded from Active Directory on the "1. Data Sources"
+tab, are all fields loaded — the home directory, the list of groups? Why is the
+"HomeDirectory" field empty in the Edit window, and why are the groups not
+visible?**
+
+**Answer: no, and the reason is one line of code.** The loader asked the
+directory for exactly six attributes:
+
+```python
+attributes=['givenName', 'sn', 'displayName', 'sAMAccountName',
+            'mail', 'distinguishedName']
+```
+
+`ldap3` only fills in attributes that were **requested**. An attribute left out
+of that list is not "empty in the directory" — it was never asked for, and the
+entry simply does not carry it. So the complete picture before the change was:
+
+| Field in the application | Attribute | Loaded before? |
+|---|---|---|
+| First name | `givenName` | yes |
+| Last name | `sn` | yes |
+| AD username | `sAMAccountName` | yes |
+| Display name | `displayName` | yes |
+| Email | `mail` | yes |
+| DN | `distinguishedName` | yes |
+| **Description** | `description` | **no** |
+| **Home directory** | `homeDirectory` | **no** |
+| **Home drive** | `homeDrive` | **no** |
+| **Groups** | `memberOf` | **no** |
+| **Account enabled** | `userAccountControl` | **no** |
+| **Must change password** | `pwdLastSet` | **no** |
+
+That is the whole explanation of the reported procedure: load → copy on the
+"2. Comparison and Sync" tab → "Edit" on the "3. Operations" tab. The copy is
+faithful (`deepcopy`), the editor is correct — there was nothing to show
+because nothing was ever read.
+
+**Change.** A new module, `utils/ad_entry_mapping.py`, owns both halves of the
+problem: the list of attributes to request (`PERSON_ATTRIBUTES`) and the
+mapping from an entry to a `Person` (`person_from_entry`). One place decides,
+so the request and the mapping cannot drift apart again.
+
+Details worth naming:
+
+* **`memberOf` is not always a list.** A user in exactly one group is answered
+  with a bare string on some `ldap3` versions. `attribute_values()` accepts
+  both shapes.
+* **Group objects are built from the DN**, not fetched one by one — reading
+  every group separately would turn loading one class into dozens of extra
+  round trips. The name is the first component of the DN, and an escaped comma
+  stays inside it, so a group called `Pupils, year 6` keeps its name.
+* **`userAccountControl` is read for two flags only.** "Account disabled"
+  (`0x0002`) and "password never expires" (`0x10000`). *"User cannot change
+  password"* is deliberately **not** read from it: in Active Directory that
+  setting is two access control entries on the object, not a UAC bit, so
+  reading UAC for it would always report `False` — a wrong answer is worse than
+  no answer.
+* **A missing `userAccountControl` does not mean "disabled".** An account the
+  directory is actively serving is reported as enabled.
+* **`pwdLastSet == 0`** is how AD expresses "must change at next logon".
+* Entries without a first *or* last name are still skipped — those are service
+  accounts and computer objects, and the user search now also excludes
+  `objectClass=computer` explicitly.
+
+**Behaviour.** After loading from Active Directory, the "Edit" window shows the
+home directory, the home drive, the description and the group list, and the new
+"Home Directory" and "Groups" columns (points 16 and 17) have something to
+display. The values survive the copy made on the "2. Comparison and Sync" tab.
+
+---
+
+## 24) One search logic for both tabs
+
+**What the "Search Format" field actually did.** It offered three options:
+
+| Option | Filter it produced |
+|---|---|
+| `Trida-6X (uppercase X)` | `(ou=Trida-*)` |
+| `Trida-6x (lowercase x)` | `(ou=trida-*)` |
+| `Both` | `(\|(ou=Trida-*)(ou=trida-*))` |
+
+**All three return the same organisational units.** LDAP compares attribute
+values case-insensitively, so a directory answers `(ou=Trida-*)` with
+`Trida-6A` *and* `trida-7b`. The field asked the user to make a choice that
+could not change the result — and the code carried a comment saying exactly
+that, because a case-*sensitive* `startswith()` in Python had once dropped the
+lower-case units after the server had correctly returned them.
+
+**Change.** The field was replaced by the two controls from the
+"Active Directory Management" operation, built from the same `SearchScope`
+definitions:
+
+* **"Search in:"** — `Whole subtree below the Base DN (default)` /
+  `Only the OUs directly in the Base DN` / `Only the organisational units I name`
+* **"Organisational units:"** — enabled for the third scope only, the same
+  comma/semicolon separated list, with the same placeholder hint underneath.
+
+The shared module `utils/ad_search_scope.py` gained the discovery half of the
+problem, because the two tabs ask *different questions of the same
+configuration*:
+
+| Tab | Question | Function |
+|---|---|---|
+| 3. Operations | "where do I look for **this person**?" | `build_search_bases()`, `ldap_scope()` |
+| 1. Data Sources | "where do I look for the **class units**?" | `build_class_ou_filter()`, `class_ou_search_scope()` |
+
+**How a placeholder behaves during discovery.** A placeholder means "whatever
+this class is called". On the Operations tab that is resolved per person; on
+the Data Sources tab there is no person yet, so it becomes an LDAP wildcard:
+
+| Typed | Used as | Effect |
+|---|---|---|
+| `Trida-{class_name}` | `(ou=Trida-*)` | every class unit |
+| `Rocnik-{grade}` | `(ou=Rocnik-*)` | every year unit |
+| `Zaci` | `(ou=Zaci)` | exactly that unit |
+| `Trida-{clas_name}` | *(refused)* | a typo is neither "match nothing" nor "match everything" |
+
+**Safety.** Everything the user types is escaped for RFC 4515 before it reaches
+a filter — `(`, `)`, `\` and NUL — with `*` kept only where this module put it.
+A unit named `A)(objectClass=*` cannot break out of the filter it is placed in.
+
+**Behaviour.**
+
+* The default is unchanged: every `Trida-*` unit below the Base DN, at any
+  depth, exactly as before.
+* `Only the OUs directly in the Base DN` no longer walks a large tree.
+* `Only the organisational units I name` loads exactly the units named — a unit
+  that does not follow the `Trida-` convention keeps its own name as the class
+  name (`Zaci` loads as the class `Zaci`), and a unit matched by two entries is
+  loaded once.
+* Naming no unit at all is refused **before** the connection is opened, with
+  *"No organisational unit was named, so nothing would be searched."* — the old
+  behaviour would have reported an empty directory.
+
+---
+
 ## 25) Intermittent freeze and crash when synchronising *(high priority)*
 
 **Cause — proven, not guessed.** The stack in the report is the whole story:
@@ -524,14 +662,17 @@ either one twice suggests `... (2)`.
 | `ui/equal_width_tab_bar.py` | the tab bar extracted from `main.py` (02) |
 | `ui/source_combo.py` | read-only / editable labelling of source combos (05) |
 | `utils/enrollment_task.py` | background enrollment-year tasks (13) |
+| `utils/ad_entry_mapping.py` | which AD attributes are read, and how they become a person (20) |
 | `utils/source_naming.py` | readable default names for sources (26) |
 | `tests/test_source_combo.py` | 43 tests for the labelling and the Settings switch |
 | `tests/test_source_naming.py` | 28 tests for the name builder and the deduplicator |
+| `tests/test_ad_entry_mapping.py` | 43 tests for the attribute request and the mapping |
+| `tests/test_ad_search_scope.py` | 62 tests for the search scope, which had none before |
 
 ---
 
 ## Still open
 
-Points **18**, **19**, **20**, **21**, **22**, **23** and **24** are not part of
-this phase yet. Point 21 in particular is blocked — see the note in the reply
+Points **18**, **19**, **21**, **22** and **23** are not part of this phase
+yet. Point 21 in particular is blocked — see the note in the reply
 about the truncated `main.cs`.

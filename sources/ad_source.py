@@ -3,43 +3,29 @@ Active Directory data source implementation
 """
 
 import logging
+import re
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QMessageBox, QProgressDialog, QComboBox, QInputDialog
 )
 from PyQt6.QtCore import Qt
 
-from models import Source, Class, Person
+from models import Source, Class
+from utils.ad_entry_mapping import (
+    PERSON_ATTRIBUTES, attribute_text, person_from_entry,
+)
+from utils.ad_search_scope import (
+    DEFAULT_CLASS_OU_PATTERN, OU_PLACEHOLDERS, SearchScope, SearchScopeConfig,
+    build_class_ou_filter, class_name_from_ou, class_ou_search_scope,
+)
 from utils.source_naming import suggest_ad_source_name
 
 logger = logging.getLogger(__name__)
 
 # Canonical spelling of the organizational units that hold a class.
-CLASS_OU_PREFIX = 'Trida-'
-
-
-def _attribute_text(entry, name: str) -> str:
-    """
-    Read one LDAP attribute of an ldap3 entry as text.
-
-    ldap3 exposes every *requested* attribute on the entry even when the
-    directory returned no value for it - ``entry.givenName.value`` is then
-    ``None``.  Wrapping that in ``str()`` produced the literal string
-    ``'None'``, which looks like a real name and kept nameless accounts.
-    A value the directory did not return must read as an empty string.
-    """
-    try:
-        attribute = entry[name]
-    except (KeyError, AttributeError):
-        # The attribute was not requested / does not exist on this entry.
-        return ''
-
-    value = attribute.value
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else None
-    if value is None:
-        return ''
-    return str(value)
+# Shared with the Operations tab so both tabs recognise the same units.
+CLASS_OU_PREFIX = DEFAULT_CLASS_OU_PATTERN.rstrip('*')
 
 
 class ActiveDirectorySourceWidget(QWidget):
@@ -82,21 +68,49 @@ class ActiveDirectorySourceWidget(QWidget):
         base_layout.addWidget(self.base_dn_input)
         layout.addLayout(base_layout)
         
-        # Search format ComboBox
-        format_layout = QHBoxLayout()
-        format_layout.addWidget(QLabel("Search Format:"))
-        self.format_combo = QComboBox()
-        self.format_combo.addItem("Trida-6X (uppercase X)", "uppercase")
-        self.format_combo.addItem("Trida-6x (lowercase x)", "lowercase")
-        self.format_combo.addItem("Both (Trida-6X and Trida-6x)", "both")
-        self.format_combo.setToolTip(
-            "Choose the format for class organizational units:\n"
-            "• Uppercase: Trida-6A, Trida-7B\n"
-            "• Lowercase: Trida-6a, Trida-7b\n"
-            "• Both: Search for both formats"
+        # --- where to search -------------------------------------------
+        # The same two controls as the "Active Directory Management"
+        # operation on the "3. Operations" tab, built from the same
+        # SearchScope definitions, so the two tabs share one vocabulary.
+        scope_layout = QHBoxLayout()
+        scope_layout.addWidget(QLabel("Search in:"))
+        self.scope_combo = QComboBox()
+        for scope in SearchScope:
+            self.scope_combo.addItem(scope.label, scope)
+        self.scope_combo.setToolTip(
+            "Where the class organisational units are looked for.\n"
+            "The default walks the whole subtree below the Base DN."
         )
-        format_layout.addWidget(self.format_combo)
-        layout.addLayout(format_layout)
+        self.scope_combo.currentIndexChanged.connect(self._on_scope_changed)
+        scope_layout.addWidget(self.scope_combo, stretch=1)
+        layout.addLayout(scope_layout)
+
+        ou_layout = QHBoxLayout()
+        ou_layout.addWidget(QLabel("Organisational units:"))
+        self.ou_input = QLineEdit()
+        self.ou_input.setEnabled(False)
+        self.ou_input.setPlaceholderText(
+            "Trida-{class_name}, Rocnik-{grade}, {enrollment_year}"
+        )
+        self.ou_input.setToolTip(
+            "One or more OU names, separated by a comma or a semicolon.\n"
+            "A placeholder stands for 'whatever this class is called', so\n"
+            "'Trida-{class_name}' loads every Trida-... unit and 'Zaci'\n"
+            "loads exactly that one."
+        )
+        ou_layout.addWidget(self.ou_input, stretch=1)
+        layout.addLayout(ou_layout)
+
+        self.ou_hint = QLabel(
+            "Placeholders: " + " · ".join(
+                f"<code>{{{name}}}</code> {description}"
+                for name, description in OU_PLACEHOLDERS.items()
+            )
+        )
+        self.ou_hint.setWordWrap(True)
+        self.ou_hint.setStyleSheet("color: #888; font-size: 9px;")
+        self.ou_hint.setVisible(False)
+        layout.addWidget(self.ou_hint)
         
         # Username
         user_layout = QHBoxLayout()
@@ -125,24 +139,35 @@ class ActiveDirectorySourceWidget(QWidget):
         
         layout.addStretch()
         
+    def _on_scope_changed(self, _index: int) -> None:
+        """Only the "named OUs" scope needs the OU list."""
+        named = self.scope_combo.currentData() is SearchScope.NAMED_OUS
+        self.ou_input.setEnabled(named)
+        self.ou_hint.setVisible(named)
+
+    def get_search_scope(self) -> SearchScopeConfig:
+        """
+        Build the search scope from the two controls above.
+
+        Mirrors ``ADManagementWidget.get_search_scope()`` - the same fields,
+        the same separators, the same resulting object.
+
+        Returns:
+            The configured :class:`~utils.ad_search_scope.SearchScopeConfig`.
+        """
+        scope = self.scope_combo.currentData() or SearchScope.SUBTREE
+        raw = self.ou_input.text()
+        templates = [part.strip() for part in re.split(r'[;,]', raw) if part.strip()]
+        return SearchScopeConfig(scope=scope, ou_templates=templates)
+
     def _ou_search_filter(self) -> str:
         """
-        Build the LDAP filter for the class units in the selected spelling.
+        Build the LDAP filter that finds the class organisational units.
 
-        The 'Search Format' combo box was never read - every run searched for
-        'Trida-*' regardless of the choice.  The selected format now decides
-        how the prefix is spelled in the filter, and 'Both' asks for either
-        spelling explicitly.
+        Delegates to the shared search-scope module, so this tab and the
+        Operations tab cannot drift apart.
         """
-        search_format = self.format_combo.currentData()
-        uppercase = f'(ou={CLASS_OU_PREFIX}*)'
-        lowercase = f'(ou={CLASS_OU_PREFIX.lower()}*)'
-
-        if search_format == 'lowercase':
-            return lowercase
-        if search_format == 'both':
-            return f'(|{uppercase}{lowercase})'
-        return uppercase
+        return build_class_ou_filter(self.get_search_scope())
 
     def _ask_for_source_name(self, source) -> bool:
         """
@@ -220,6 +245,13 @@ class ActiveDirectorySourceWidget(QWidget):
         # the error handlers below must not assume it was created.
         progress = None
         
+        scope_config = self.get_search_scope()
+        problems = scope_config.problems()
+        if problems:
+            QMessageBox.warning(self, "Search Scope",
+                                "\n".join(problems))
+            return
+
         try:
             from ldap3 import Server, Connection, ALL, SUBTREE
             
@@ -249,65 +281,61 @@ class ActiveDirectorySourceWidget(QWidget):
                 readonly=True
             )
             
-            # Search for OUs matching pattern Trida-*
+            # Find the class organisational units.  Which units count and how
+            # deep the search goes both come from the selected scope.
+            logger.info("Searching for class units: %s", scope_config.describe())
             conn.search(
                 search_base=base_dn,
                 search_filter=self._ou_search_filter(),
-                search_scope=SUBTREE,
+                search_scope=class_ou_search_scope(scope_config),
                 attributes=['ou', 'distinguishedName']
             )
-            
+
             class_ous = []
+            seen_dns = set()
             for entry in conn.entries:
-                ou_name = _attribute_text(entry, 'ou')
-                # LDAP compares 'ou' case-insensitively, so the directory also
-                # returns units spelled 'trida-7b'.  A case-sensitive
-                # startswith() silently dropped exactly those units.
-                if ou_name and ou_name.lower().startswith(CLASS_OU_PREFIX.lower()):
-                    class_ous.append({
-                        'name': ou_name,
-                        'dn': _attribute_text(entry, 'distinguishedName') or entry.entry_dn
-                    })
+                ou_name = attribute_text(entry, 'ou')
+                if not ou_name:
+                    continue
+                dn = attribute_text(entry, 'distinguishedName') or entry.entry_dn
+                # Two templates can match the same unit ('Trida-{class_name}'
+                # and 'Trida-6A'); it must still be loaded only once.
+                key = (dn or ou_name).casefold()
+                if key in seen_dns:
+                    continue
+                seen_dns.add(key)
+                class_ous.append({'name': ou_name, 'dn': dn})
             
             # Load users from each class OU
             for ou_info in class_ous:
                 progress.setLabelText(f"Loading students from {ou_info['name']}...")
                 
-                # Strip the prefix in the spelling the directory actually used
-                # ('Trida-6A' -> '6A', 'trida-7b' -> '7b').
-                class_name = ou_info['name'][len(CLASS_OU_PREFIX):]
+                # 'Trida-6A' -> '6A', 'trida-7b' -> '7b'.  A unit the user
+                # named explicitly and that carries no prefix keeps its name.
+                class_name = class_name_from_ou(ou_info['name'], CLASS_OU_PREFIX)
                 cls = Class(name=class_name)
-                
-                # Search for users in this OU
+
+                # Search for users in this OU.  ldap3 only fills in attributes
+                # that were requested, so the list has to be complete - an
+                # attribute left out here reads as empty everywhere in the
+                # application, which is exactly why home directories and group
+                # memberships used to arrive blank.
                 conn.search(
                     search_base=ou_info['dn'],
-                    search_filter='(objectClass=user)',
+                    search_filter='(&(objectClass=user)'
+                                  '(!(objectClass=computer)))',
                     search_scope=SUBTREE,
-                    # 'distinguishedName' has to be requested explicitly - it was
-                    # read from the entry below without ever being asked for.
-                    attributes=['givenName', 'sn', 'displayName', 'sAMAccountName',
-                                'mail', 'distinguishedName']
+                    attributes=PERSON_ATTRIBUTES
                 )
-                
+
                 for entry in conn.entries:
-                    first_name = _attribute_text(entry, 'givenName')
-                    last_name = _attribute_text(entry, 'sn')
-                    
-                    if not first_name or not last_name:
+                    person = person_from_entry(entry, class_name)
+                    if person is None:
+                        # No first or last name: a service account or a
+                        # computer object, not a pupil.
                         continue
-                    
-                    person = Person(
-                        first_name=first_name,
-                        last_name=last_name,
-                        class_name=class_name,
-                        ad_username=_attribute_text(entry, 'sAMAccountName') or None,
-                        ad_display_name=_attribute_text(entry, 'displayName') or None,
-                        ad_email=_attribute_text(entry, 'mail') or None,
-                    )
-                    person.metadata['ad_dn'] = (_attribute_text(entry, 'distinguishedName')
-                                                or entry.entry_dn)
                     cls.add_person(person)
-                
+
                 source.add_class(cls)
             
             # Disconnect

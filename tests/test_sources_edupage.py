@@ -2329,24 +2329,270 @@ def test_ad_load_accepts_a_class_ou_written_in_lower_case(ad_widget, ad_director
     assert [cls.name for cls in ad_widget.source_manager.sources[0].classes] == ["7b"]
 
 
+# ---------------------------------------------------------------------------
+# Version 26, point 24 - the AD source uses the Operations tab's search scope
+# ---------------------------------------------------------------------------
+#
+# The old "Search Format" field offered 'Trida-6X', 'Trida-6x' and 'both'.
+# LDAP matches attribute values case-insensitively, so all three returned
+# exactly the same organisational units - the choice could not change the
+# result.  It was replaced by the scope the user already knows from the
+# "Active Directory Management" operation.
+
+
+def _select_scope(widget, scope):
+    """Pick a search scope in the AD source widget."""
+    from utils.ad_search_scope import SearchScope  # noqa: F401
+    widget.scope_combo.setCurrentIndex(widget.scope_combo.findData(scope))
+
+
 @pytest.mark.gui
-@pytest.mark.bug
-def test_ad_load_honours_the_selected_search_format(ad_widget, ad_directory, dialogs):
-    """The chosen 'Search Format' must influence the OU search filter."""
+def test_ad_source_offers_the_same_scopes_as_the_operations_tab(ad_widget):
+    """One vocabulary for both tabs."""
+    from utils.ad_search_scope import SearchScope
+
+    offered = [ad_widget.scope_combo.itemData(i)
+               for i in range(ad_widget.scope_combo.count())]
+    assert offered == list(SearchScope)
+
+
+@pytest.mark.gui
+def test_the_ou_field_is_only_enabled_for_the_named_ou_scope(ad_widget):
+    """The OU list is meaningless for the two scopes that search by convention."""
+    from utils.ad_search_scope import SearchScope
+
+    _select_scope(ad_widget, SearchScope.SUBTREE)
+    assert ad_widget.ou_input.isEnabled() is False
+
+    _select_scope(ad_widget, SearchScope.NAMED_OUS)
+    assert ad_widget.ou_input.isEnabled() is True
+    # isVisible() is False for every widget while the window itself is not
+    # shown; isHidden() asks the question the test means.
+    assert ad_widget.ou_hint.isHidden() is False
+
+
+@pytest.mark.gui
+def test_the_default_scope_searches_the_whole_subtree(ad_widget, ad_directory,
+                                                       dialogs):
+    """Unchanged default behaviour: find every Trida-* unit below the Base DN."""
+    from services.ldap_compat import SUBTREE
+
     ad_directory.add_ou("Trida-6A")
 
-    ad_widget.format_combo.setCurrentIndex(
-        ad_widget.format_combo.findData("uppercase"))
     ad_widget.on_load()
-    uppercase_filter = ad_directory.searches[0]["search_filter"]
 
-    ad_directory.searches.clear()
-    ad_widget.format_combo.setCurrentIndex(
-        ad_widget.format_combo.findData("lowercase"))
+    ou_search = ad_directory.searches[0]
+    assert ou_search["search_scope"] == SUBTREE
+    assert "organizationalUnit" in ou_search["search_filter"]
+    assert "Trida-*" in ou_search["search_filter"]
+
+
+@pytest.mark.gui
+def test_the_one_level_scope_only_looks_directly_in_the_base_dn(
+        ad_widget, ad_directory, dialogs):
+    """'Only the OUs directly in the Base DN' must not walk the whole tree."""
+    from services.ldap_compat import LEVEL
+    from utils.ad_search_scope import SearchScope
+
+    ad_directory.add_ou("Trida-6A")
+    _select_scope(ad_widget, SearchScope.ONE_LEVEL)
+
     ad_widget.on_load()
-    lowercase_filter = ad_directory.searches[0]["search_filter"]
 
-    assert uppercase_filter != lowercase_filter
+    assert ad_directory.searches[0]["search_scope"] == LEVEL
+
+
+@pytest.mark.gui
+def test_a_named_unit_is_loaded_under_its_own_name(ad_widget, ad_directory,
+                                                    dialogs):
+    """A unit the user names need not follow the Trida- convention."""
+    from utils.ad_search_scope import SearchScope
+
+    ad_directory.add_ou("Zaci")
+    ad_directory.add_user("Zaci", "novakjan", givenName="Jan", sn="Novák")
+    _select_scope(ad_widget, SearchScope.NAMED_OUS)
+    ad_widget.ou_input.setText("Zaci")
+
+    ad_widget.on_load()
+
+    source = ad_widget.source_manager.sources[0]
+    assert [cls.name for cls in source.classes] == ["Zaci"]
+
+
+@pytest.mark.gui
+def test_a_placeholder_in_a_named_unit_becomes_a_wildcard(ad_widget, ad_directory,
+                                                           dialogs):
+    """'Trida-{class_name}' covers every class without naming them all."""
+    from utils.ad_search_scope import SearchScope
+
+    ad_directory.add_ou("Trida-6A")
+    ad_directory.add_ou("Trida-7B")
+    ad_directory.add_ou("Ucitele")
+    _select_scope(ad_widget, SearchScope.NAMED_OUS)
+    ad_widget.ou_input.setText("Trida-{class_name}")
+
+    ad_widget.on_load()
+
+    source = ad_widget.source_manager.sources[0]
+    assert sorted(cls.name for cls in source.classes) == ["6A", "7B"]
+
+
+@pytest.mark.gui
+def test_named_units_are_separated_by_a_comma_or_a_semicolon(ad_widget,
+                                                              ad_directory, dialogs):
+    """The same separators the Operations tab accepts."""
+    from utils.ad_search_scope import SearchScope
+
+    ad_directory.add_ou("Zaci")
+    ad_directory.add_ou("Ucitele")
+    _select_scope(ad_widget, SearchScope.NAMED_OUS)
+    ad_widget.ou_input.setText("Zaci; Ucitele")
+
+    ad_widget.on_load()
+
+    source = ad_widget.source_manager.sources[0]
+    assert sorted(cls.name for cls in source.classes) == ["Ucitele", "Zaci"]
+
+
+@pytest.mark.gui
+def test_the_named_ou_scope_without_a_name_is_refused_before_connecting(
+        ad_widget, ad_directory, dialogs):
+    """Searching nothing would silently report an empty directory."""
+    from utils.ad_search_scope import SearchScope
+
+    ad_directory.add_ou("Trida-6A")
+    _select_scope(ad_widget, SearchScope.NAMED_OUS)
+    ad_widget.ou_input.setText("   ")
+
+    ad_widget.on_load()
+
+    assert dialogs.titles() == ["Search Scope"]
+    assert ad_directory.searches == [], "no connection should have been opened"
+    assert ad_widget.source_manager.sources == []
+
+
+@pytest.mark.gui
+def test_one_unit_matched_by_two_templates_is_loaded_once(ad_widget, ad_directory,
+                                                           dialogs):
+    """'Trida-{class_name}' and 'Trida-6A' both match the same unit."""
+    from utils.ad_search_scope import SearchScope
+
+    ad_directory.add_ou("Trida-6A")
+    _select_scope(ad_widget, SearchScope.NAMED_OUS)
+    ad_widget.ou_input.setText("Trida-{class_name}, Trida-6A")
+
+    ad_widget.on_load()
+
+    source = ad_widget.source_manager.sources[0]
+    assert [cls.name for cls in source.classes] == ["6A"]
+
+
+# ---------------------------------------------------------------------------
+# Version 26, point 20 - the AD source loads every field, not five of them
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gui
+def test_ad_load_asks_the_directory_for_every_person_attribute(
+        ad_widget, ad_directory, dialogs):
+    """
+    ldap3 only fills in attributes that were requested.
+
+    An attribute missing from the request reads as empty everywhere in the
+    application - which is why home directories and groups used to be blank.
+    """
+    from utils.ad_entry_mapping import PERSON_ATTRIBUTES
+
+    ad_directory.add_ou("Trida-6A")
+
+    ad_widget.on_load()
+
+    user_search = ad_directory.searches[1]
+    assert user_search["attributes"] == PERSON_ATTRIBUTES
+    for attribute in ("homeDirectory", "homeDrive", "memberOf", "description"):
+        assert attribute in user_search["attributes"]
+
+
+@pytest.mark.gui
+def test_ad_load_fills_in_the_home_directory_and_the_groups(
+        ad_widget, ad_directory, dialogs):
+    """Point 20: the Edit window showed neither before this change."""
+    ad_directory.add_ou("Trida-6A")
+    ad_directory.add_user(
+        "Trida-6A", "novakjan",
+        givenName="Jan", sn="Novák", sAMAccountName="novakjan",
+        homeDirectory=r"\\srv\students\novakjan", homeDrive="H:",
+        description="Pupil of 6.A",
+        memberOf=[f"cn=Zaci,{ADDirectory.base_dn}",
+                  f"cn=Trida-6A,{ADDirectory.base_dn}"],
+    )
+
+    ad_widget.on_load()
+
+    person = ad_widget.source_manager.sources[0].classes[0].persons[0]
+    assert person.home_directory == r"\\srv\students\novakjan"
+    assert person.home_drive == "H:"
+    assert person.ad_description == "Pupil of 6.A"
+    assert sorted(g.name for g in person.group_memberships) == ["Trida-6A", "Zaci"]
+
+
+@pytest.mark.gui
+def test_a_person_in_exactly_one_group_still_gets_that_group(
+        ad_widget, ad_directory, dialogs):
+    """ldap3 answers a single-valued memberOf with a bare string."""
+    ad_directory.add_ou("Trida-6A")
+    ad_directory.add_user("Trida-6A", "novakjan", givenName="Jan", sn="Novák",
+                          memberOf=[f"cn=Zaci,{ADDirectory.base_dn}"])
+
+    ad_widget.on_load()
+
+    person = ad_widget.source_manager.sources[0].classes[0].persons[0]
+    assert [g.name for g in person.group_memberships] == ["Zaci"]
+
+
+@pytest.mark.gui
+def test_the_loaded_values_survive_a_copy_of_the_source(ad_widget, ad_directory,
+                                                         dialogs):
+    """
+    The procedure from the report, end to end.
+
+    Load from Active Directory, copy the source on the "2. Comparison and
+    Sync" tab, and the copy must still carry the home directory and the
+    groups - that copy is what the Operations tab edits.
+    """
+    ad_directory.add_ou("Trida-6A")
+    ad_directory.add_user(
+        "Trida-6A", "novakjan", givenName="Jan", sn="Novák",
+        homeDirectory=r"\\srv\students\novakjan", homeDrive="H:",
+        memberOf=[f"cn=Zaci,{ADDirectory.base_dn}"],
+    )
+
+    ad_widget.on_load()
+    loaded = ad_widget.source_manager.sources[0]
+
+    copy = loaded.deep_copy()
+    copy.readonly = False
+
+    person = copy.classes[0].persons[0]
+    assert person.home_directory == r"\\srv\students\novakjan"
+    assert person.home_drive == "H:"
+    assert [g.name for g in person.group_memberships] == ["Zaci"]
+    # A copy must be independent, not a second view of the same objects.
+    assert person is not loaded.classes[0].persons[0]
+
+
+@pytest.mark.gui
+def test_a_person_without_groups_gets_an_empty_list_not_a_crash(
+        ad_widget, ad_directory, dialogs):
+    """The attribute is requested but the directory returns nothing for it."""
+    ad_directory.add_ou("Trida-6A")
+    ad_directory.add_user("Trida-6A", "novakjan", givenName="Jan", sn="Novák")
+
+    ad_widget.on_load()
+
+    person = ad_widget.source_manager.sources[0].classes[0].persons[0]
+    assert person.group_memberships == []
+    assert person.home_directory is None
 
 
 @pytest.mark.gui
