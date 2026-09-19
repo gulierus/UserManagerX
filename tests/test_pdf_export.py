@@ -42,6 +42,7 @@ from reportlab.platypus import Paragraph
 
 import ui.pdf_export_dialog as pdf_export_dialog_module
 import operations.pdf_export as pdf_export_module
+from models_m365 import M365Status
 from models import ADStatus
 from operations.pdf_export import PDFExportWidget
 from ui.pdf_export_dialog import PDFExportDialog
@@ -53,12 +54,23 @@ from utils.pdf_generator import PageMarginDrawer, PDFGenerator
 # Helpers
 # ---------------------------------------------------------------------------
 
-#: The columns ``_person_to_dict`` is expected to produce, in order.
+#: The columns shown by default, in order.
 EXPECTED_COLUMNS = [
     'First Name', 'Last Name', 'Class', 'Username', 'Password', 'Email',
     'Display Name', 'Enabled', 'Must Change Password',
     'Cannot Change Password', 'Password Never Expires', 'AD Status',
 ]
+
+#: The Microsoft 365 columns (Version 26, point 22).  They exist in every row
+#: but start hidden, so a school that does not use Microsoft 365 is not handed
+#: six empty columns.
+M365_COLUMNS = [
+    'M365 Sign-in Name', 'M365 Password', 'M365 Display Name', 'M365 Alias',
+    'M365 Usage Location', 'M365 Status',
+]
+
+#: Every column ``_person_to_dict`` produces, in order.
+ALL_COLUMNS = EXPECTED_COLUMNS + M365_COLUMNS
 
 
 def settings(**overrides):
@@ -261,6 +273,12 @@ class TestPersonToDict:
             ad_password="Str0ng!", ad_email="jan@skola.cz",
             ad_display_name="Jan Novák", account_enabled=True,
             password_must_change=True, ad_status=ADStatus.SYNC_SUCCEEDED,
+            m365_user_principal_name="novakj@skola.cz",
+            m365_password="M365-Str0ng!",
+            m365_display_name="Jan Novák (6.A)",
+            m365_mail_nickname="novakj",
+            m365_usage_location="CZ",
+            m365_status=M365Status.SYNC_SUCCEEDED,
         )
         assert widget._person_to_dict(person) == {
             'First Name': 'Jan', 'Last Name': 'Novák', 'Class': '6.A',
@@ -269,11 +287,17 @@ class TestPersonToDict:
             'Enabled': 'Yes', 'Must Change Password': 'Yes',
             'Cannot Change Password': 'No', 'Password Never Expires': 'No',
             'AD Status': ADStatus.SYNC_SUCCEEDED.label,
+            'M365 Sign-in Name': 'novakj@skola.cz',
+            'M365 Password': 'M365-Str0ng!',
+            'M365 Display Name': 'Jan Novák (6.A)',
+            'M365 Alias': 'novakj',
+            'M365 Usage Location': 'CZ',
+            'M365 Status': M365Status.SYNC_SUCCEEDED.label,
         }
 
     def test_column_order_follows_the_documented_layout(self, widget, make_person):
         """The dict order decides the table columns, so it must be stable."""
-        assert list(widget._person_to_dict(make_person())) == EXPECTED_COLUMNS
+        assert list(widget._person_to_dict(make_person())) == ALL_COLUMNS
 
     def test_unset_ad_fields_become_empty_strings_not_none(self, widget, make_person):
         """``None`` must never reach the PDF as the text "None"."""
@@ -390,7 +414,7 @@ class TestLoadTableFromSource:
 
         assert [row['First Name'] for row in widget.table_data] == \
             ["Cyril", "Adam", "Bruno"]
-        assert widget.column_headers == EXPECTED_COLUMNS
+        assert widget.column_headers == ALL_COLUMNS
         assert widget.visible_columns == EXPECTED_COLUMNS
         assert widget.custom_columns == []
         assert widget.selected_classes == ["6.A"]
@@ -762,7 +786,7 @@ class TestColumnManagement:
         loaded.manage_columns()
 
         assert loaded.visible_columns == ["First Name", "Username"]
-        assert loaded.column_headers == EXPECTED_COLUMNS
+        assert loaded.column_headers == ALL_COLUMNS
         assert loaded.table_data[0]['Password'] == "pw-cyril"
 
 
@@ -800,7 +824,7 @@ class TestRenameColumn:
         loaded.rename_column(0, 'First Name')
 
         assert dialogs.saw("Duplicate Name")
-        assert loaded.column_headers == EXPECTED_COLUMNS
+        assert loaded.column_headers == ALL_COLUMNS
         assert loaded.table_data[0]['First Name'] == "Cyril"
 
     @pytest.mark.parametrize("answer", [
@@ -813,7 +837,7 @@ class TestRenameColumn:
         dialogs.text_answer = answer
         loaded.rename_column(0, 'First Name')
 
-        assert loaded.column_headers == EXPECTED_COLUMNS
+        assert loaded.column_headers == ALL_COLUMNS
         assert loaded.table_data[0]['First Name'] == "Cyril"
 
 
@@ -1784,3 +1808,54 @@ class TestPDFExportDialogWithoutWebEngine:
 
         assert produced['selected_columns'] == ['First Name', 'Last Name']
         assert 'password' not in produced
+
+
+# ===========================================================================
+# Version 26, point 22 - the Microsoft 365 fields in the PDF
+# ===========================================================================
+
+@pytest.mark.gui
+class TestMicrosoft365Columns:
+    """A PDF is how credentials are handed out, so it has to carry them."""
+
+    def test_every_microsoft_365_field_is_exported(self, widget, make_person):
+        row = widget._person_to_dict(make_person(
+            m365_user_principal_name="novakj@skola.cz",
+            m365_password="M365-Str0ng!",
+            m365_display_name="Jan Novák (6.A)",
+            m365_mail_nickname="novakj",
+            m365_usage_location="CZ"))
+        assert row['M365 Sign-in Name'] == "novakj@skola.cz"
+        assert row['M365 Password'] == "M365-Str0ng!"
+        assert row['M365 Display Name'] == "Jan Novák (6.A)"
+        assert row['M365 Alias'] == "novakj"
+        assert row['M365 Usage Location'] == "CZ"
+
+    def test_the_status_is_exported_as_readable_text(self, widget,
+                                                     make_person):
+        row = widget._person_to_dict(
+            make_person(m365_status=M365Status.NOT_FOUND_IN_M365))
+        assert row['M365 Status'] == M365Status.NOT_FOUND_IN_M365.label
+
+    def test_unset_fields_become_empty_strings_not_none(self, widget,
+                                                        make_person):
+        row = widget._person_to_dict(make_person())
+        for column in M365_COLUMNS:
+            if column == 'M365 Status':
+                continue
+            assert row[column] == ''
+
+    def test_they_are_available_but_hidden_by_default(self, loaded):
+        # A school that does not use Microsoft 365 should not be handed six
+        # empty columns.
+        for column in M365_COLUMNS:
+            assert column in loaded.column_headers
+            assert column not in loaded.visible_columns
+
+    def test_they_can_be_switched_on(self, loaded, monkeypatch):
+        loaded.visible_columns = list(loaded.column_headers)
+        loaded._populate_table()
+        assert loaded.table.columnCount() == len(ALL_COLUMNS)
+
+    def test_the_active_directory_columns_are_untouched(self, loaded):
+        assert loaded.visible_columns == EXPECTED_COLUMNS

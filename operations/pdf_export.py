@@ -37,6 +37,17 @@ class PDFExportWidget(QWidget):
     - Advanced PDF generation with full customization
     - Encrypted PDF viewer
     """
+
+    #: Columns that exist but are not shown until the user asks for them.
+    #:
+    #: The Microsoft 365 fields are only interesting to a school that uses
+    #: Microsoft 365; for everybody else they would be six empty columns
+    #: squeezing the ones that matter.
+    DEFAULT_HIDDEN_COLUMNS = frozenset({
+        'M365 Sign-in Name', 'M365 Password', 'M365 Display Name',
+        'M365 Alias', 'M365 Usage Location', 'M365 Status',
+    })
+
     
     def __init__(self, source_manager):
         super().__init__()
@@ -312,10 +323,13 @@ class PDFExportWidget(QWidget):
             QMessageBox.information(self, "No Data", "Selected classes contain no persons")
             return
         
-        # Determine columns from first row
+        # Determine columns from first row.  Everything is *available*; the
+        # Microsoft 365 columns start hidden so a school that does not use it
+        # is not handed six empty columns.
         if self.table_data:
             self.column_headers = list(self.table_data[0].keys())
-            self.visible_columns = self.column_headers.copy()
+            self.visible_columns = [column for column in self.column_headers
+                                    if column not in self.DEFAULT_HIDDEN_COLUMNS]
         
         # Populate table
         self._populate_table()
@@ -339,6 +353,16 @@ class PDFExportWidget(QWidget):
             # A PDF is read by a person, so the readable label goes in it
             # rather than the internal value ('Identical', not 'matches_ad').
             'AD Status': person.ad_status.label,
+            # --- Microsoft 365 (Version 26, point 22) -----------------------
+            # Off by default (see DEFAULT_HIDDEN_COLUMNS): a school that does
+            # not use Microsoft 365 should not get six empty columns, and a
+            # school that does can switch them on in "Columns...".
+            'M365 Sign-in Name': str(person.m365_user_principal_name or ''),
+            'M365 Password': str(person.m365_password or ''),
+            'M365 Display Name': str(person.m365_display_name or ''),
+            'M365 Alias': str(person.m365_mail_nickname or ''),
+            'M365 Usage Location': str(person.m365_usage_location or ''),
+            'M365 Status': person.m365_status.label,
         }
         
     def _populate_table(self):

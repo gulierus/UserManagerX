@@ -59,6 +59,13 @@ RICH_PERSON_FIELDS = {
     "password_cannot_change": True,
     "password_never_expires": True,
     "account_enabled": True,
+    # --- Microsoft 365 (Version 26, point 23) -------------------------------
+    "m365_user_principal_name": "novakovas@skola.onmicrosoft.com",
+    "m365_display_name": "Šárka Nováková-Čermáková (6.A)",
+    "m365_mail_nickname": "novakovas",
+    "m365_password": "M365#Tajné1",
+    "m365_usage_location": "CZ",
+    "m365_object_id": "6f1e9c40-0000-4000-8000-000000000001",
     "metadata": {"edupage_id": "42", "poznámka": "přeřazena z 5.B"},
 }
 
@@ -272,10 +279,17 @@ def test_source_to_dict_stamps_the_format_version_and_an_iso_export_date(rich_so
 
 
 def test_source_to_dict_writes_every_person_key(rich_source):
-    """No field of the export format is missing from the written dictionary."""
+    """
+    No field of the export format is missing from the written dictionary.
+
+    ``m365_status`` is written but is not in RICH_PERSON_FIELDS, because that
+    dictionary is fed straight into ``Person(...)`` where the status is an
+    enumeration member rather than the text the file holds.
+    """
     person_data = source_to_dict(rich_source)["classes"][0]["persons"][0]
 
-    assert set(person_data) == set(RICH_PERSON_FIELDS) | {"group_memberships"}
+    assert set(person_data) == (set(RICH_PERSON_FIELDS)
+                                | {"group_memberships", "m365_status"})
 
 
 def test_source_to_dict_output_is_json_serialisable(rich_source):
@@ -924,3 +938,66 @@ def test_source_to_dict_is_json_serialisable_after_an_ad_check(make_person,
 
     text = json.dumps(source_to_dict(source), indent=2, ensure_ascii=False)
     assert "2024" in text
+
+
+# ---------------------------------------------------------------------------
+# Version 26, point 23 - the Microsoft 365 fields in the JSON export
+# ---------------------------------------------------------------------------
+
+def test_the_microsoft_365_status_survives_a_round_trip(make_source, make_class,
+                                                        make_person):
+    """The status is stored by value and read back as the same member."""
+    from models_m365 import M365Status
+
+    person = make_person(m365_status=M365Status.SYNC_INCOMPLETE)
+    source = make_source("S", source_type="manual")
+    source.add_class(make_class("6.A", persons=[person]))
+
+    restored = roundtrip(source).get_all_persons()[0]
+    assert restored.m365_status is M365Status.SYNC_INCOMPLETE
+
+
+def test_the_microsoft_365_status_is_written_as_text_not_an_enum(make_person):
+    """A JSON file has to hold something JSON can express."""
+    from utils.source_serialization import person_to_dict
+
+    written = person_to_dict(make_person())['m365_status']
+    assert isinstance(written, str)
+
+
+def test_a_file_without_the_microsoft_365_fields_still_loads(make_person):
+    """A file written before this version simply lacks the keys."""
+    from models_m365 import M365Status
+    from utils.source_serialization import person_from_dict
+
+    restored = person_from_dict({"first_name": "Jan", "last_name": "Novák",
+                                 "class_name": "6.A"})
+    assert restored.m365_user_principal_name is None
+    assert restored.m365_status is M365Status.UNKNOWN
+
+
+def test_an_unreadable_microsoft_365_status_does_not_stop_the_load(make_person):
+    """A status this version does not know becomes 'not checked'."""
+    from models_m365 import M365Status
+    from utils.source_serialization import person_from_dict
+
+    restored = person_from_dict({"first_name": "Jan", "last_name": "Novák",
+                                 "class_name": "6.A",
+                                 "m365_status": "something_from_the_future"})
+    assert restored.m365_status is M365Status.UNKNOWN
+
+
+def test_the_two_directories_are_stored_separately(make_person):
+    """
+    A person can be in both directories with different values.
+
+    Folding them into one set of fields would lose one of them.
+    """
+    from utils.source_serialization import person_from_dict, person_to_dict
+
+    person = make_person(ad_display_name="Jan Novák",
+                         m365_display_name="Jan Novák (6.A)")
+    restored = person_from_dict(person_to_dict(person))
+
+    assert restored.ad_display_name == "Jan Novák"
+    assert restored.m365_display_name == "Jan Novák (6.A)"

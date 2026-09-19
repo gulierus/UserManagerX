@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from models import ADGroup, Class, Person, Source, VerificationStatus
+from models_m365 import M365Status
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,17 @@ def person_to_dict(person: Person) -> Dict[str, Any]:
         "password_cannot_change": person.password_cannot_change,
         "password_never_expires": person.password_never_expires,
         "account_enabled": person.account_enabled,
+        # --- Microsoft 365 (Version 26, point 23) ---------------------------
+        # Stored separately from the Active Directory fields because they are
+        # separate: a person can exist in both directories with different
+        # values, and folding them together would lose one of them.
+        "m365_user_principal_name": person.m365_user_principal_name,
+        "m365_display_name": person.m365_display_name,
+        "m365_mail_nickname": person.m365_mail_nickname,
+        "m365_password": person.m365_password,
+        "m365_usage_location": person.m365_usage_location,
+        "m365_object_id": person.m365_object_id,
+        "m365_status": person.m365_status.value,
         "metadata": _plain_copy(person.metadata),
     }
 
@@ -192,6 +204,15 @@ def person_from_dict(data: Dict[str, Any]) -> Person:
         password_cannot_change=bool(data.get("password_cannot_change", False)),
         password_never_expires=bool(data.get("password_never_expires", False)),
         account_enabled=bool(data.get("account_enabled", False)),
+        m365_user_principal_name=data.get("m365_user_principal_name"),
+        m365_display_name=data.get("m365_display_name"),
+        m365_mail_nickname=data.get("m365_mail_nickname"),
+        m365_password=data.get("m365_password"),
+        m365_usage_location=data.get("m365_usage_location"),
+        m365_object_id=data.get("m365_object_id"),
+        # from_value() accepts an older spelling and falls back to UNKNOWN, so
+        # a status this version does not recognise cannot stop a file loading.
+        m365_status=M365Status.from_value(data.get("m365_status")),
         metadata=_plain_copy(person_metadata) or {},
     )
 
